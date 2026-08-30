@@ -48,15 +48,16 @@ DISCORD_BOT_TOKEN=your_bot_token
 DISCORD_CHANNEL_ID=123456789012345678
 DISCORD_USER_ID=123456789012345678
 BRAVE_SEARCH_API_KEY=your_key
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://100.102.10.69:11434
+OLLAMA_MODEL=qwen3.5:27b
 OPENAI_API_KEY=
 OPENAI_MODEL=
 NOTIFICATIONS_ENABLED=false
 ```
 
-Create a bot in the Discord Developer Portal, invite it to the destination server with the `bot`
-and `applications.commands` scopes, and grant it View Channel, Send Messages, Embed Links, and Read
-Message History. `DISCORD_USER_ID` restricts commands and mentions that one account; leaving it
-blank permits any member with channel access to invoke the commands.
+`DISCORD_USER_ID` restricts commands and mentions that one account; leaving it blank permits any
+member with channel access to invoke the commands.
 
 Validate configuration and initialize storage:
 
@@ -96,9 +97,43 @@ mode.
 To add an organizer, add an entry to `config/sources.yaml`; the configured templates automatically
 produce targeted searches. To add or disable a query, edit YAML rather than application code.
 
-OpenAI extraction is optional. When `OPENAI_API_KEY` and `OPENAI_MODEL` are absent, Akaton uses the
-deterministic pipeline only. Source text is treated as untrusted data, typed output is required,
-and claimed evidence must occur in the fetched source.
+The default LLM fallback is the Ollama service at `100.102.10.69`, using the installed
+`qwen3.5:27b` model. Akaton invokes it only when deterministic extraction is ambiguous. Set
+`LLM_PROVIDER=disabled` to use deterministic extraction exclusively. OpenAI remains an optional
+fallback and is used only when `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are all
+configured. Source text is treated as untrusted data, typed output is required, and claimed
+evidence must occur in the fetched source.
+
+## Getting the required credentials
+
+### Discord
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications), select
+   **New Application**, and give it a name.
+2. Open **Bot** and use **Reset Token** to create the bot token. Put it in
+   `DISCORD_BOT_TOKEN`; never post or commit it.
+3. Open **Installation**. For a Guild Install, select the `bot` and `applications.commands`
+   scopes. Grant only View Channel, Send Messages, Embed Links, and Read Message History.
+4. Copy the install link, open it, and add the bot to the server containing the notification
+   channel.
+5. In Discord, enable **User Settings > Advanced > Developer Mode**. Right-click the destination
+   channel and choose **Copy Channel ID** for `DISCORD_CHANNEL_ID`. Right-click your own profile and
+   choose **Copy User ID** for `DISCORD_USER_ID`.
+
+The application uses a Discord bot token, not a user token. It does not require an interactions
+public key or interactions endpoint because `discord.py` registers commands and receives events
+through Discord's Gateway connection.
+
+### Brave Search
+
+1. Open the [Brave Search API dashboard](https://api-dashboard.search.brave.com/), create an
+   account, and verify the email address.
+2. Activate an available Search API plan. Brave currently requires plan activation before it lets
+   you create a key; review the current pricing and included credits in the dashboard.
+3. Open **API Keys**, choose **Add API Key**, and name it something like `akaton-personal`.
+4. Copy it once into `BRAVE_SEARCH_API_KEY` in `.env`. Do not place it in YAML or commit it.
+5. Run `akaton discover-once`. A valid key should produce search-run records instead of an HTTP
+   authentication error.
 
 ## Browser fallback
 

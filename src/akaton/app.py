@@ -23,7 +23,7 @@ from akaton.jobs.refresh import RefreshJob
 from akaton.observability import configure_logging
 from akaton.persistence.database import Database, upgrade_database
 from akaton.pipeline import CandidatePipeline
-from akaton.processing.llm import OpenAILLMProvider
+from akaton.processing.llm import OllamaLLMProvider, OpenAILLMProvider
 
 
 def _dependencies(config: ConfigBundle, notifier=None, *, database: Database | None = None):
@@ -45,6 +45,11 @@ def _dependencies(config: ConfigBundle, notifier=None, *, database: Database | N
         and config.runtime.openai_model
     ):
         llm = OpenAILLMProvider(config.runtime.openai_api_key, config.runtime.openai_model)
+    elif config.runtime.llm_provider == "ollama":
+        llm = OllamaLLMProvider(
+            config.runtime.ollama_base_url,
+            config.runtime.ollama_model,
+        )
     pipeline = CandidatePipeline(database, config, fetcher, llm=llm, notifier=notifier)
     return database, fetcher, pipeline
 

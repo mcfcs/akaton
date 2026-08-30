@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -20,10 +20,11 @@ class RuntimeSettings(BaseSettings):
     discord_user_id: int | None = None
     search_provider: str = "brave"
     brave_search_api_key: str | None = None
-    llm_provider: str = "openai"
+    llm_provider: Literal["ollama", "openai", "disabled"] = "ollama"
     openai_api_key: str | None = None
     openai_model: str | None = None
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://100.102.10.69:11434"
+    ollama_model: str = "qwen3.5:27b"
     proxy_mode: str = "auto"
     database_url: str = "sqlite+aiosqlite:///data/akaton.db"
     notifications_enabled: bool = False
