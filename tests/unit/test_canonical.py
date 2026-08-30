@@ -53,6 +53,27 @@ def test_offsite_declared_canonical_is_ignored():
     assert canonical == "https://aggregator.test/listing/42"
 
 
+def test_site_root_canonical_does_not_swallow_a_deep_page():
+    """gcash.com/imagnation declares www.new.gcash.com/ as canonical for every page."""
+    canonical, _ = choose_urls(
+        "https://gcash.com/imagnation",
+        "https://gcash.com/imagnation",
+        [],
+        {"canonical": "https://www.new.gcash.com/"},
+    )
+    assert canonical == "https://gcash.com/imagnation"
+
+
+def test_root_canonical_is_kept_when_the_page_itself_is_the_root():
+    canonical, _ = choose_urls(
+        "https://aifest.ph",
+        "https://aifest.ph",
+        [],
+        {"canonical": "https://www.aifest.ph/"},
+    )
+    assert canonical == "https://www.aifest.ph/"
+
+
 def test_redirect_target_wins_over_the_requested_url():
     canonical, _ = choose_urls(
         "https://example.ph/old-link",

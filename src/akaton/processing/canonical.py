@@ -25,7 +25,7 @@ def choose_urls(
         for key in ("canonical", "og:url", "url")
         if metadata.get(key) and str(metadata[key]).startswith(("http://", "https://"))
     ]
-    canonical = next((url for url in declared if _same_site(url, self_url)), self_url)
+    canonical = next((url for url in declared if _is_usable_canonical(url, self_url)), self_url)
 
     link_candidates = list(
         dict.fromkeys(
@@ -36,6 +36,19 @@ def choose_urls(
     )
     registration = next((url for url in link_candidates if is_registration_url(url)), None)
     return canonical, registration
+
+
+def _is_usable_canonical(declared: str, self_url: str) -> bool:
+    """Accept a page's declared canonical only when it still identifies this page.
+
+    A site-wide root canonical on a deep page is a CMS default rather than a real
+    declaration, and following it collapses every event on the site onto the homepage.
+    """
+    if not _same_site(declared, self_url):
+        return False
+    declared_path = urlsplit(declared).path.strip("/")
+    self_path = urlsplit(self_url).path.strip("/")
+    return bool(declared_path) or not self_path
 
 
 def _same_site(url: str, other: str) -> bool:
