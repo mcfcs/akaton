@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from akaton.domain.enums import (
@@ -23,6 +24,7 @@ from akaton.domain.models import (
 from akaton.processing.classifier import classify_category, classify_document
 from akaton.processing.normalize import (
     extract_edition,
+    is_listing_url,
     is_registration_url,
     normalize_organizer,
     normalize_text,
@@ -115,7 +117,24 @@ def extract_labeled_dates(text: str, published: datetime | None = None) -> dict[
     return result
 
 
-def extract_location(text: str) -> LocationFact:
+PH_TERMS = (
+    "philippines",
+    "philippine",
+    "filipino",
+    "filipinas",
+    "pilipinas",
+    "pilipino",
+    "metro manila",
+)
+
+
+def is_philippine_host(url: str | None) -> bool:
+    """A `.ph` host is a strong signal on its own: the TLD is reserved for the country."""
+    host = (urlsplit(url or "").hostname or "").casefold()
+    return host.endswith(".ph")
+
+
+def extract_location(text: str, url: str | None = None) -> LocationFact:
     lowered = normalize_text(text)
     online = any(term in lowered for term in ("online", "virtual", "remote"))
     hybrid = "hybrid" in lowered
@@ -125,12 +144,16 @@ def extract_location(text: str) -> LocationFact:
         if alias in lowered:
             city, region, confidence = candidate_city, candidate_region, 0.9
             break
+    # `normalize_text` strips punctuation, so "Philippine Space Agency" and a .ph host both
+    # have to be recognised here or a local government page reads as an overseas event.
     country = (
         "PH"
-        if any(term in lowered for term in ("philippines", "filipino", "metro manila")) or city
+        if any(term in lowered for term in PH_TERMS) or city or is_philippine_host(url)
         else None
     )
-    if hybrid:
+    if hybrid or (online and city):
+        # A named venue alongside online wording is a hybrid event, not a remote one.
+        # Treating it as purely online discards the very city that makes it local.
         location_type = LocationType.HYBRID
     elif online:
         location_type = LocationType.ONLINE
@@ -259,7 +282,7 @@ def extract_deterministically(
         (normalize_url(url) for url in context.links if is_registration_url(url)), None
     )
     category = classify_category(combined)
-    kind = classify_document(combined)
+    kind = DocumentKind.DIRECTORY if is_listing_url(context.url) else classify_document(combined)
     facts = EventFacts(
         title=title,
         normalized_title=normalize_title(title),
@@ -270,7 +293,7 @@ def extract_deterministically(
         registration_open_date=dates["registration_open_date"],
         registration_deadline=dates["registration_deadline"],
         event_start=dates["event_start"],
-        location=extract_location(combined),
+        location=extract_location(combined, context.url),
         eligibility=extract_eligibility(combined),
         canonical_url=normalize_url(context.url),
         registration_url=registration,

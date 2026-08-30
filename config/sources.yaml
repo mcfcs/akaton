@@ -62,6 +62,52 @@ organizers:
     category: community
     authority: 80
     enabled: true
+  # Philippine companies that run their own recurring student competitions. Their sites are
+  # .com, so the gov.ph/edu.ph platform rules do not reach them and they would otherwise
+  # score 50 and be dropped with LOW_AUTHORITY.
+  - id: gcash
+    name: GCash
+    aliases: [GCash, G-Xchange, Mynt]
+    domains: [gcash.com]
+    category: company
+    authority: 85
+    enabled: true
+  - id: globe
+    name: Globe Telecom
+    aliases: [Globe, Globe Telecom]
+    domains: [globe.com.ph]
+    category: company
+    authority: 85
+    enabled: true
+  - id: maya
+    name: Maya Philippines
+    aliases: [Maya, PayMaya]
+    domains: [maya.ph]
+    category: company
+    authority: 85
+    enabled: true
+  - id: unionbank
+    name: UnionBank of the Philippines
+    aliases: [UnionBank, UBP]
+    domains: [unionbankph.com]
+    category: company
+    authority: 85
+    enabled: true
+# Event platforms and Philippine aggregators, as domain: authority. The verifier accepts a
+# single source only at authority 60 or above, so an unlisted site scores 50 (third_party)
+# and is rejected with LOW_AUTHORITY. Add a domain here to admit a trusted listing site.
+platforms:
+  # Restricted Philippine TLDs: only government agencies and accredited schools may hold
+  # them, so any host under them is a credible single source for a local competition.
+  # Organizers listed above are matched first and keep their own authority.
+  gov.ph: 85
+  edu.ph: 80
+  hackathons.ph: 70
+  unstop.com: 70
+  lu.ma: 65
+  luma.com: 65
+  8layeracademy.com: 65
+  aifest.ph: 65
 query_templates:
   - 'site:{domain} hackathon registration'
   - 'site:{domain} "case competition"'

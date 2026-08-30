@@ -16,6 +16,7 @@ NON_ACTIONABLE = {
     DocumentKind.WINNER_ANNOUNCEMENT,
     DocumentKind.PAST_EVENT_RECAP,
     DocumentKind.NEWS_ARTICLE,
+    DocumentKind.DIRECTORY,
     DocumentKind.CONFERENCE,
     DocumentKind.WEBINAR,
     DocumentKind.JOB_POSTING,
@@ -31,6 +32,7 @@ def verify_event(
     source_authority: int,
     corroborating_sources: int = 1,
     now: datetime | None = None,
+    allow_historical: bool = False,
 ) -> VerificationDecision:
     now = now or datetime.now(UTC)
     facts = extraction.facts
@@ -55,7 +57,9 @@ def verify_event(
             else RejectionCode.NO_COMPETITION
         )
 
-    gates["future"] = facts.event_phase not in {EventPhase.PAST, EventPhase.CANCELLED}
+    gates["future"] = facts.event_phase not in {EventPhase.PAST, EventPhase.CANCELLED} or (
+        allow_historical and facts.event_phase is EventPhase.PAST
+    )
     if not gates["future"]:
         rejection.append(RejectionCode.PAST_EVENT)
 
@@ -65,7 +69,7 @@ def verify_event(
         and facts.registration_deadline.confidence >= 0.8
         and not facts.registration_deadline.year_inferred
     )
-    gates["registration"] = (
+    gates["registration"] = allow_historical or (
         facts.registration_state in {RegistrationState.OPEN, RegistrationState.FORTHCOMING}
         and not deadline_past
     )
@@ -76,15 +80,13 @@ def verify_event(
             warnings.append("registration state is not confirmed open or forthcoming")
 
     eligibility = facts.eligibility
-    local_ph = facts.location.country == "PH" and facts.location.location_type in {
-        LocationType.ONSITE,
-        LocationType.HYBRID,
-    }
     online = facts.location.location_type in {LocationType.ONLINE, LocationType.HYBRID}
     if eligibility.philippines_allowed is False:
         gates["philippines_eligible"] = False
         rejection.append(RejectionCode.NOT_PHILIPPINES_ELIGIBLE)
-    elif local_ph:
+    elif facts.location.country == "PH":
+        # A Philippine event is open to a Philippine participant whether it runs onsite,
+        # hybrid, or online. Only a foreign online event has to say so explicitly.
         gates["philippines_eligible"] = True
     elif online and profile.allow_online_international:
         gates["philippines_eligible"] = eligibility.philippines_allowed is True

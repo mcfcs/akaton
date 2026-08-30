@@ -37,6 +37,12 @@ class FetchManager:
     ) -> FetchResult:
         policy = self.policies.for_url(url)
         host = (urlsplit(url).hostname or "").casefold()
+        if policy.fetch == "disabled":
+            # Refuse before the rate-limit wait: a blocked domain must never consume
+            # a request slot or delay the queue behind it.
+            return FetchResult(
+                requested_url=url, fetch_method="policy", failure=FailureCode.FETCH_DISABLED
+            )
         if self._cooldown_until[host] > time.monotonic():
             return FetchResult(
                 requested_url=url,

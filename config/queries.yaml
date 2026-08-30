@@ -30,16 +30,19 @@ groups:
       - 'AI competition Philippines students'
       - 'product building competition Philippines'
       - 'strategy competition Philippines students'
-  social:
+  # Event platforms and aggregators. These replaced the former `social` group, whose
+  # site:facebook.com / site:linkedin.com / site:instagram.com queries could only ever
+  # return domains that config/domains.yaml blocks from fetching.
+  platforms:
     cadence_hours: 12
     weight: 4
     freshness: pm
     queries:
-      - 'site:linkedin.com/posts hackathon Philippines registration'
-      - 'site:linkedin.com/posts "case competition" Philippines'
-      - 'site:facebook.com hackathon Philippines registration'
-      - 'site:facebook.com "case competition" Philippines'
-      - 'site:instagram.com hackathon Philippines'
+      - 'site:devpost.com hackathon Philippines'
+      - 'site:unstop.com competition Philippines'
+      - 'site:eventbrite.com hackathon Philippines'
+      - 'site:lu.ma hackathon Philippines'
+      - 'site:hackathons.ph'
   filipino:
     cadence_hours: 72
     weight: 1

@@ -44,7 +44,9 @@ class HttpFetcher:
                 requested_url=url, fetch_method="http", failure=FailureCode.UNSAFE_URL
             )
         if policy.fetch == "disabled":
-            return FetchResult(requested_url=url, fetch_method="http", failure=FailureCode.HTTP_403)
+            return FetchResult(
+                requested_url=url, fetch_method="policy", failure=FailureCode.FETCH_DISABLED
+            )
 
         headers = {"User-Agent": "Akaton/0.1 (+personal competition monitor)"}
         if etag:

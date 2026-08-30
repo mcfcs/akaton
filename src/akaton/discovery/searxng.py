@@ -64,7 +64,17 @@ class SearXNGSearchProvider:
                 )
             except (TypeError, ValueError):
                 continue
-        return SearchPage(results=results)
+        return SearchPage(results=results, unresponsive_engines=_unresponsive(body))
+
+
+def _unresponsive(body: dict) -> list[str]:
+    entries = []
+    for entry in body.get("unresponsive_engines") or []:
+        if isinstance(entry, (list, tuple)):
+            entries.append(": ".join(str(part) for part in entry if part))
+        elif entry:
+            entries.append(str(entry))
+    return entries
 
 
 def _time_range(freshness: str | None) -> str | None:

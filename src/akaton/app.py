@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
+from datetime import date
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -148,6 +149,23 @@ async def _discover_once(config: ConfigBundle) -> None:
     await database.close()
 
 
+async def _backfill(config: ConfigBundle, since: date, query_limit: int) -> None:
+    database, fetcher, pipeline = _dependencies(config)
+    await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
+    discovery, _, _ = _monitor_jobs(config, database, pipeline, fetcher)
+    print(
+        "HISTORICAL TEST MODE: past-event and registration-deadline gates are bypassed; "
+        "normal scheduled discovery remains strict."
+    )
+    counts = await discovery.run(
+        since=since,
+        historical_test=True,
+        query_limit=query_limit,
+    )
+    print(counts)
+    await database.close()
+
+
 async def _dashboard(config: ConfigBundle) -> None:
     database, fetcher, pipeline = _dependencies(config)
     await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
@@ -168,13 +186,23 @@ async def _run(config: ConfigBundle) -> None:
         raise ValueError("DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required to run the bot")
     database = Database(config.runtime.database_url)
     await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
-    bot = AkatonBot(database=database, authorized_user_id=config.runtime.discord_user_id)
+    bot = AkatonBot(
+        database=database,
+        authorized_user_id=config.runtime.discord_user_id,
+        guild_id=config.runtime.discord_guild_id,
+        channel_id=config.runtime.discord_channel_id,
+    )
     notifier = DiscordNotifier(
         bot, config.runtime.discord_channel_id, user_id=config.runtime.discord_user_id
     )
     _, fetcher, pipeline = _dependencies(config, notifier=notifier, database=database)
     discovery, refresh, maintenance = _monitor_jobs(config, database, pipeline, fetcher)
     bot.run_discovery = discovery.run
+    bot.run_backfill = lambda since, queries: discovery.run(
+        since=since,
+        historical_test=True,
+        query_limit=queries,
+    )
     reconciliation_complete = False
 
     @bot.event
@@ -214,6 +242,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--allow-example-profile", action="store_true")
     subparsers.add_parser("init-db")
     subparsers.add_parser("discover-once")
+    backfill = subparsers.add_parser("backfill")
+    backfill.add_argument("--since", type=date.fromisoformat, required=True)
+    backfill.add_argument("--queries", type=int, default=16)
     subparsers.add_parser("dashboard")
     subparsers.add_parser("run")
     return parser
@@ -237,6 +268,10 @@ def main() -> None:
         print("Database initialized.")
     elif args.command == "discover-once":
         asyncio.run(_discover_once(config))
+    elif args.command == "backfill":
+        if args.queries < 1:
+            raise ValueError("--queries must be at least 1")
+        asyncio.run(_backfill(config, args.since, args.queries))
     elif args.command == "dashboard":
         asyncio.run(_dashboard(config))
     else:

@@ -1,6 +1,12 @@
 timezone: Asia/Manila
 discovery_interval_hours: 6
 discovery_queries_per_run: 8
+# Candidates processed in parallel within one search page. Per-domain rate limits in
+# config/domains.yaml still apply, so this only overlaps work across different domains.
+discovery_concurrency: 6
+# Extractions allowed to run at once. Ollama serialises requests per model, so raising
+# this queues them on the server until the client times out rather than going faster.
+llm_concurrency: 1
 monthly_search_budget: 950
 refresh_interval_hours: 24
 notification_threshold: 65

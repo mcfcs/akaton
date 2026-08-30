@@ -6,6 +6,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -23,6 +24,8 @@ class Database:
             if path_text and path_text != ":memory:":
                 Path(path_text).parent.mkdir(parents=True, exist_ok=True)
         self.engine: AsyncEngine = create_async_engine(url, echo=echo)
+        if url.startswith("sqlite"):
+            _enable_sqlite_concurrency(self.engine)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
 
     async def create_schema(self) -> None:
@@ -41,6 +44,20 @@ class Database:
 
     async def close(self) -> None:
         await self.engine.dispose()
+
+
+def _enable_sqlite_concurrency(engine: AsyncEngine) -> None:
+    """Use WAL and a busy timeout so parallel candidates do not hit `database is locked`."""
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_pragmas(connection, _record) -> None:  # pragma: no cover - driver callback
+        cursor = connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 
 
 def upgrade_database(url: str, root: Path) -> None:

@@ -20,6 +20,10 @@ class SearchRequest(BaseModel):
 class SearchPage(BaseModel):
     results: list[CandidateSeed]
     request_count: int = 1
+    # Upstream engines the provider could not reach, as "engine: reason". SearXNG has no
+    # index of its own, so when these are all suspended it returns HTTP 200 with an empty
+    # result list, which is otherwise indistinguishable from a genuine absence of results.
+    unresponsive_engines: list[str] = Field(default_factory=list)
 
 
 class SearchProvider(Protocol):

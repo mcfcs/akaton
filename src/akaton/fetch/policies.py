@@ -23,14 +23,18 @@ class DomainPolicyResolver:
         )
 
     def for_url(self, url: str) -> DomainPolicy:
+        """Resolve the policy for a URL, preferring the most specific configured domain.
+
+        Domains match subdomains by default, so a `facebook.com` entry also covers
+        `www.facebook.com`. Set `match: exact` on an entry to restrict it to the
+        exact host.
+        """
         host = (urlsplit(url).hostname or "").casefold()
         best: tuple[int, dict] | None = None
         for domain, overrides in self.config.get("domains", {}).items():
             domain = domain.casefold()
-            match = overrides.get("match", "exact")
-            matched = host == domain or (
-                match == "suffix" and (host == domain or host.endswith(f".{domain}"))
-            )
+            match = overrides.get("match", "suffix")
+            matched = host == domain or (match == "suffix" and host.endswith(f".{domain}"))
             if matched and (best is None or len(domain) > best[0]):
                 best = (len(domain), overrides)
         if not best:

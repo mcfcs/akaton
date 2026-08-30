@@ -63,7 +63,10 @@ def is_registration_url(url: str) -> bool:
         for marker in (
             "forms.gle/",
             "docs.google.com/forms",
-            "eventbrite.",
+            # Only a specific Eventbrite listing registers you. Matching the bare domain
+            # also matched discovery pages such as /d/ca--sunnyvale/..., which made a
+            # city directory look like a registrable event.
+            "eventbrite.com/e/",
             "devpost.com/register",
             "/register",
             "/registration",
@@ -71,6 +74,33 @@ def is_registration_url(url: str) -> bool:
             "lu.ma/",
         )
     )
+
+
+LISTING_MARKERS = (
+    "/d/",
+    "/discover",
+    "/search",
+    "/sitemap",
+    "/browse",
+    "/tag/",
+    "/category/",
+    "/categories/",
+    "/hackathons/",
+    "/events/browse",
+)
+
+
+def is_listing_url(url: str) -> bool:
+    """True for directory pages that enumerate many events rather than describing one.
+
+    A city or tag listing mentions every category and location it contains, so treating
+    it as a single event invents one out of unrelated fragments.
+    """
+    parts = urlsplit(url.casefold())
+    path = parts.path if parts.path.endswith("/") else f"{parts.path}/"
+    if any(marker in path for marker in LISTING_MARKERS):
+        return True
+    return any(key in ("q", "query", "search") for key, _ in parse_qsl(parts.query))
 
 
 def extract_edition(title: str | None, *date_years: int | None) -> tuple[str | None, int | None]:

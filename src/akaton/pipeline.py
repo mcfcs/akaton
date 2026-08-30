@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -9,7 +10,7 @@ from sqlalchemy import select
 
 from akaton.config import ConfigBundle
 from akaton.discord.embeds import build_change_payload, build_new_event_payload
-from akaton.domain.enums import CandidateState, FailureCode
+from akaton.domain.enums import CandidateState, FailureCode, RejectionCode
 from akaton.domain.models import (
     CandidateSeed,
     DocumentContext,
@@ -66,8 +67,13 @@ class CandidatePipeline:
         self.fetcher = fetcher
         self.llm = llm
         self.notifier = notifier
+        # Ollama serialises requests per model, so letting every parallel candidate fire
+        # its own extraction only builds a queue on the server until clients time out.
+        self._llm_limit = asyncio.Semaphore(config.app.llm_concurrency)
 
-    async def process(self, seed: CandidateSeed) -> PipelineOutcome:
+    async def process(
+        self, seed: CandidateSeed, *, historical_test: bool = False
+    ) -> PipelineOutcome:
         async with self.database.session() as session:
             repo = Repository(session)
             candidate = await repo.upsert_candidate(seed)
@@ -80,6 +86,12 @@ class CandidatePipeline:
                 )
             candidate.retry_at = None
             await repo.transition_candidate(candidate, CandidateState.NORMALIZED)
+            if historical_test:
+                await repo.transition_candidate(
+                    candidate,
+                    CandidateState.PREFILTERED,
+                    detail={"mode": "historical_test", "time_gates_bypassed": True},
+                )
             candidate_id = candidate.id
             previous = await session.scalar(
                 select(SourceSnapshotRow)
@@ -96,6 +108,7 @@ class CandidatePipeline:
             candidate = await session.get(CandidateRow, candidate_id)
             assert candidate is not None
             snapshot = await repo.add_snapshot(candidate, fetch)
+            snapshot_id = snapshot.id
             if fetch.unchanged:
                 if candidate.event_id:
                     event = await session.get(EventRow, candidate.event_id)
@@ -123,6 +136,21 @@ class CandidatePipeline:
                     candidate.event_id,
                     fetch.failure.value,
                 )
+            if fetch.failure is FailureCode.FETCH_DISABLED:
+                # A configured domain block is a policy decision, not a fetch failure.
+                # The search snippet is all this source will ever give us.
+                await repo.transition_candidate(
+                    candidate,
+                    CandidateState.REJECTED,
+                    detail={"reason": "fetch_disabled_domain"},
+                    rejection_reasons=[RejectionCode.SEARCH_SNIPPET_ONLY.value],
+                )
+                return PipelineOutcome(
+                    candidate_id,
+                    CandidateState.REJECTED.value,
+                    candidate.event_id,
+                    RejectionCode.SEARCH_SNIPPET_ONLY.value,
+                )
             if not fetch.usable:
                 await repo.transition_candidate(
                     candidate,
@@ -137,25 +165,35 @@ class CandidatePipeline:
                 candidate, CandidateState.FETCHED, detail={"method": fetch.fetch_method}
             )
 
-            context = DocumentContext(
-                url=fetch.final_url or str(seed.url),
-                title=fetch.title or seed.title,
-                text=fetch.text or "",
-                snippet=seed.snippet,
-                metadata=fetch.metadata,
-                links=fetch.links,
-            )
-            extraction = extract_deterministically(context, published=seed.published_hint)
-            llm_used = False
-            if self.llm and should_use_llm(extraction):
-                try:
+        # Extraction runs outside any session. An LLM call takes tens of seconds, and
+        # holding a SQLite write transaction across it stalls every other candidate
+        # processed in parallel until they fail on a locked database.
+        context = DocumentContext(
+            url=fetch.final_url or str(seed.url),
+            title=fetch.title or seed.title,
+            text=fetch.text or "",
+            snippet=seed.snippet,
+            metadata=fetch.metadata,
+            links=fetch.links,
+        )
+        extraction = extract_deterministically(context, published=seed.published_hint)
+        llm_used = False
+        if self.llm and should_use_llm(extraction):
+            try:
+                async with self._llm_limit:
                     extraction = await self.llm.extract(context)
-                    llm_used = True
-                except Exception as exc:
-                    logger.warning(
-                        "llm_extraction_failed",
-                        extra={"candidate_id": candidate_id, "error_type": type(exc).__name__},
-                    )
+                llm_used = True
+            except Exception as exc:
+                logger.warning(
+                    "llm_extraction_failed",
+                    extra={"candidate_id": candidate_id, "error_type": type(exc).__name__},
+                )
+
+        async with self.database.session() as session:
+            repo = Repository(session)
+            candidate = await session.get(CandidateRow, candidate_id)
+            snapshot = await session.get(SourceSnapshotRow, snapshot_id)
+            assert candidate is not None and snapshot is not None
             await repo.transition_candidate(
                 candidate,
                 CandidateState.EXTRACTED,
@@ -166,14 +204,19 @@ class CandidatePipeline:
                 },
             )
             canonical, registration = choose_urls(
-                str(seed.url), fetch.final_url, fetch.links, fetch.metadata, self.config.sources
+                str(seed.url), fetch.final_url, fetch.links, fetch.metadata
             )
             extraction.facts.canonical_url = canonical
             extraction.facts.registration_url = registration or extraction.facts.registration_url
             authority = authority_for_url(
                 canonical, self.config.sources, discovery_channel=seed.discovery_channel
             )
-            verification = verify_event(extraction, self.config.profile, source_authority=authority)
+            verification = verify_event(
+                extraction,
+                self.config.profile,
+                source_authority=authority,
+                allow_historical=historical_test,
+            )
             if not verification.accepted:
                 reasons = [item.value for item in verification.rejection_codes] or ["AMBIGUOUS"]
                 state = (
@@ -259,7 +302,7 @@ class CandidatePipeline:
                     event.id,
                     "existing_event",
                 )
-            if is_new and score.total < threshold:
+            if is_new and score.total < threshold and not historical_test:
                 await repo.transition_candidate(
                     candidate,
                     CandidateState.SUPPRESSED,

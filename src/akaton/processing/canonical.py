@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from akaton.processing.authority import authority_for_url
 from akaton.processing.normalize import is_registration_url, normalize_url
 
 
@@ -11,33 +10,37 @@ def choose_urls(
     final_url: str | None,
     links: list[str],
     metadata: dict,
-    sources: dict,
 ) -> tuple[str, str | None]:
-    candidates = [requested_url]
-    if final_url:
-        candidates.append(final_url)
-    for key in ("canonical", "og:url", "url"):
-        if metadata.get(key):
-            candidates.append(str(metadata[key]))
-    candidates.extend(links)
-    normalized = list(
+    """Pick the event's canonical URL and, if present, a registration link.
+
+    The canonical URL always identifies the fetched document: the URL we landed on, or a
+    same-site `canonical`/`og:url` it declares for itself. Outbound links are only ever
+    considered for the registration URL. Scoring arbitrary page links by authority would
+    let the Facebook or Instagram link in a site's footer outrank the page itself, because
+    social domains carry higher default authority than an unknown third-party site.
+    """
+    self_url = normalize_url(final_url or requested_url)
+    declared = [
+        normalize_url(str(metadata[key]))
+        for key in ("canonical", "og:url", "url")
+        if metadata.get(key) and str(metadata[key]).startswith(("http://", "https://"))
+    ]
+    canonical = next((url for url in declared if _same_site(url, self_url)), self_url)
+
+    link_candidates = list(
         dict.fromkeys(
-            normalize_url(url) for url in candidates if url.startswith(("http://", "https://"))
+            normalize_url(url)
+            for url in (requested_url, final_url, *declared, *links)
+            if url and str(url).startswith(("http://", "https://"))
         )
     )
-    registration = next((url for url in normalized if is_registration_url(url)), None)
-
-    def score(url: str) -> tuple[int, int, int]:
-        authority = authority_for_url(url, sources)
-        path = urlsplit(url).path.strip("/")
-        event_specific = 1 if path else 0
-        registration_penalty = -1 if is_registration_url(url) else 0
-        return authority, event_specific, registration_penalty
-
-    non_registration = [url for url in normalized if not is_registration_url(url)] or normalized
-    canonical = (
-        max(non_registration, key=score)
-        if non_registration
-        else normalize_url(final_url or requested_url)
-    )
+    registration = next((url for url in link_candidates if is_registration_url(url)), None)
     return canonical, registration
+
+
+def _same_site(url: str, other: str) -> bool:
+    host = (urlsplit(url).hostname or "").casefold()
+    other_host = (urlsplit(other).hostname or "").casefold()
+    if not host or not other_host:
+        return False
+    return host == other_host or host.endswith(f".{other_host}") or other_host.endswith(f".{host}")

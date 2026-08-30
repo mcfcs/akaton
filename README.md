@@ -15,8 +15,10 @@ until you explicitly enable them.
 - Search-provider and source-adapter interfaces, with private SearXNG, Brave Search, and Devpost
   implementations.
 - An optional Kaggle API adapter.
-- Search-engine discovery of public Facebook, LinkedIn, and Instagram pages; no account login or
-  authenticated social scraping.
+- No account login or authenticated social scraping. Facebook, LinkedIn, and Instagram are
+  blocked in `config/domains.yaml`; results on those domains are rejected as
+  `SEARCH_SNIPPET_ONLY` without a request, because they serve a JavaScript shell to
+  anonymous clients and nothing usable can be extracted from it.
 - HTTP-first fetching, HTML/PDF extraction, conditional requests, conservative domain limits, and
   Patchright Chromium only when a policy permits browser fallback.
 - SSRF protection on the initial request and redirects, bounded downloads, retries, rate-limit
@@ -25,7 +27,8 @@ until you explicitly enable them.
 - Deterministic extraction first and local Ollama structured extraction for ambiguous pages.
 - SQLite event history, source snapshots, change detection, notification outbox, and Alembic's
   initial migration.
-- Discord embeds plus `/upcoming`, `/deadlines`, `/search-now`, `/status`, and `/why` commands.
+- Discord embeds plus `/upcoming`, `/deadlines`, `/search-now`, `/backfill`, `/status`, and `/why`
+  commands.
 - A 6-hour rotating discovery job, adaptive known-event refresh, pending-notification recovery,
   and snapshot retention.
 - A Tailscale-only dashboard with live status, events, candidates, rejection reasons, and monitor
@@ -93,23 +96,64 @@ Keep `NOTIFICATIONS_ENABLED=false` for the first few cycles. Inspect `/status`, 
 `/why event_id:<id>` before enabling delivery. Events and decisions are still stored in shadow
 mode.
 
+For an explicitly historical Discord test, temporarily enable notifications and run:
+
+```text
+/backfill since:2026-08-01 queries:4
+```
+
+This appends an `after:2026-08-01` constraint to the selected search queries and bypasses only the
+past-event and closed-registration gates for that invocation. All normal scheduled discovery stays
+strict. Start with two to four queries to avoid flooding the destination channel, then restore
+`NOTIFICATIONS_ENABLED=false` if you only wanted a delivery test.
+
+`/search-now` and `/backfill` acknowledge immediately and run in the background, then post their
+summary to the notification channel. A full cycle can outlast Discord's 15-minute interaction
+window, so the result cannot be delivered as a reply to the command. Each command refuses to
+start a second run while its previous one is still going.
+
 ## Configuration
 
-- `config/queries.yaml` contains weighted, rotating global and indexed-social queries.
+- `config/queries.yaml` contains weighted, rotating global, metro, category, platform, and
+  Filipino-language queries.
 - `config/sources.yaml` contains organizers, aliases, domains, authority, generated query
-  templates, and structured-source cadence.
+  templates, structured-source cadence, and a `platforms` map of domain to authority.
 - `config/domains.yaml` controls requests per minute, concurrency, retries, timeouts, browser
-  permission, proxy policy, and disabled sources.
+  permission, proxy policy, and disabled sources. An entry matches its subdomains too, so
+  `facebook.com` also covers `www.facebook.com`; add `match: exact` to restrict it.
 - `config/scoring.yaml` contains deterministic weights and thresholds.
-- `config/settings.yaml` contains scheduling, budget, retention, and notification defaults.
+- `config/settings.yaml` contains scheduling, budget, retention, and notification defaults,
+  including `discovery_concurrency`, the number of candidates processed in parallel within one
+  search page. Per-domain rate limits still apply, so raising it only overlaps work across
+  different domains.
 - `config/profile.yaml` contains the private participant profile.
 
 To add an organizer, add an entry to `config/sources.yaml`; the configured templates automatically
 produce targeted searches. To add or disable a query, edit YAML rather than application code.
 
+The verifier accepts a lone source only at authority 60 or above, and an unlisted site scores 50,
+so it is rejected with `LOW_AUTHORITY`. `platforms` in `config/sources.yaml` admits trusted
+listing sites by domain, and covers subdomains. It seeds the restricted `gov.ph` and `edu.ph`
+suffixes, which only Philippine government agencies and accredited schools can hold. When a real
+event is rejected for `LOW_AUTHORITY`, adding its domain there is the intended fix.
+
 The default LLM fallback is the Ollama service at `100.102.10.69`, using the installed
 `qwen3.5:27b` model. Akaton invokes it only when deterministic extraction is ambiguous. Set
-`LLM_PROVIDER=disabled` to use deterministic extraction exclusively. OpenAI remains an optional
+`LLM_PROVIDER=disabled` to use deterministic extraction exclusively.
+
+The LLM dominates cycle time. On the configured server one `qwen3.5:27b` extraction takes about
+53 seconds, so the LLM is the throughput limit rather than the network. `discovery_concurrency`
+does not relieve it, because Ollama serialises requests per model: issuing several at once only
+queues them on the server until the client times out. `llm_concurrency` in `config/settings.yaml`
+therefore defaults to 1, and extractions are admitted one at a time while fetching stays parallel.
+
+Use `LLM_PROVIDER=disabled` for fast pipeline runs and configuration testing, and leave it enabled
+for scheduled discovery, where a long cycle inside a 6-hour interval is acceptable. Lower
+`discovery_queries_per_run` if a cycle does not finish before the next one starts.
+
+Extractions whose evidence quotes do not appear verbatim in the fetched source are rejected by
+`validate_llm_evidence`, and the candidate falls back to the deterministic result. That is working
+as intended, but it is not rare: in a 16-query run, 12 of 49 extractions were discarded this way. OpenAI remains an optional
 fallback and is used only when `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are all
 configured. Source text is treated as untrusted data, typed output is required, and claimed
 evidence must occur in the fetched source.
@@ -128,7 +172,14 @@ evidence must occur in the fetched source.
    channel.
 5. In Discord, enable **User Settings > Advanced > Developer Mode**. Right-click the destination
    channel and choose **Copy Channel ID** for `DISCORD_CHANNEL_ID`. Right-click your own profile and
-   choose **Copy User ID** for `DISCORD_USER_ID`.
+   choose **Copy User ID** for `DISCORD_USER_ID`. Right-click the server and choose **Copy Server
+   ID** for `DISCORD_GUILD_ID`.
+
+`DISCORD_USER_ID` must be your own account ID, not the application's. Every command is refused
+for any other user, so pasting the bot's ID here makes the bot answer "Not authorized" to you.
+
+Set `DISCORD_GUILD_ID` so commands register against that server and appear immediately. Without
+it they are registered globally, which Discord can take up to an hour to propagate.
 
 The application uses a Discord bot token, not a user token. It does not require an interactions
 public key or interactions endpoint because `discord.py` registers commands and receives events
@@ -151,6 +202,18 @@ The software path can be zero-cost: SQLite, deterministic parsing, the Ollama se
 `100.102.10.69`, a private SearXNG instance, and the dashboard are all self-hosted. This excludes
 electricity, hardware, and internet service. SearXNG does not own a search index; it queries
 configured upstream engines, so those engines can throttle it or return fewer results.
+
+Throttling is the practical limit on how often discovery can run, and it is easy to reach. After
+several 16-query runs in quick succession, Brave, Google CSE, and Startpage suspended the instance
+and DuckDuckGo timed out; SearXNG then answered HTTP 200 with an empty result list. Once an
+instance is in that state a fresh 16-query burst re-suspends it immediately, while the engines
+recover after a few idle minutes. The scheduled default of `discovery_queries_per_run: 8` every
+six hours is well inside this limit; repeated back-to-back manual runs are not.
+
+Akaton records such a run as a `FAILED` search naming the engines rather than as a successful run
+that found nothing, so the dashboard and `/status` distinguish a throttled backend from a quiet
+week. If searches start failing this way, leave the instance idle for a while or move to
+`SEARCH_PROVIDER=brave` with an API key, which queries an owned index instead.
 
 Patchright is not a search engine. It can render a JavaScript event page after discovery, but using
 it to automate consumer search-result pages would be brittle, CAPTCHA-prone, and inappropriate as

@@ -62,3 +62,32 @@ def test_yearless_date_is_marked_inferred():
 
 def test_all_requested_scenarios_have_fixtures(event_cases):
     assert len(event_cases) == 26
+
+
+def test_historical_mode_only_relaxes_time_and_registration_gates(event_cases, config):
+    case = event_cases[6]
+    extraction = extract_deterministically(
+        DocumentContext(
+            url="https://ateneo.edu/events/historical-test",
+            title=case["title"],
+            text=case["text"],
+        ),
+        now=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+    normal = verify_event(
+        extraction,
+        config.profile,
+        source_authority=90,
+        now=datetime(2026, 8, 30, tzinfo=UTC),
+    )
+    historical = verify_event(
+        extraction,
+        config.profile,
+        source_authority=90,
+        now=datetime(2026, 8, 30, tzinfo=UTC),
+        allow_historical=True,
+    )
+    assert normal.accepted is False
+    assert historical.accepted is True
+    assert historical.gate_results["future"] is True
+    assert historical.gate_results["registration"] is True

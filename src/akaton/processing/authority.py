@@ -41,6 +41,12 @@ def authority_for_url(url: str, sources: dict, *, discovery_channel: str | None 
             domain = domain.casefold()
             if host == domain or host.endswith(f".{domain}"):
                 return int(organizer.get("authority", DEFAULT_AUTHORITY["official_organizer"]))
+    # `platforms` in config/sources.yaml lets a listed event platform or aggregator clear
+    # the verifier's authority gate without being modelled as an organizer.
+    for domain, authority in (sources.get("platforms") or {}).items():
+        domain = str(domain).casefold()
+        if host == domain or host.endswith(f".{domain}"):
+            return int(authority)
     if host in STRUCTURED:
         return DEFAULT_AUTHORITY["structured_platform"]
     if host in SOCIAL:

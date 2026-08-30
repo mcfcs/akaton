@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import asyncio
+import logging
+from datetime import UTC, date, datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -10,20 +12,74 @@ from sqlalchemy import func, select
 from akaton.persistence.database import Database
 from akaton.persistence.models import CandidateRow, EventRow, SearchRunRow
 
+logger = logging.getLogger(__name__)
+
 
 class AkatonBot(commands.Bot):
-    def __init__(self, *, database: Database, authorized_user_id: int | None = None) -> None:
-        super().__init__(command_prefix="!", intents=discord.Intents.none())
+    def __init__(
+        self,
+        *,
+        database: Database,
+        authorized_user_id: int | None = None,
+        guild_id: int | None = None,
+        channel_id: int | None = None,
+    ) -> None:
+        # `guilds` is non-privileged and keeps the guild and channel cache warm, so the
+        # notifier resolves its destination locally instead of over REST on every send.
+        # No message, member, or presence intent is requested.
+        super().__init__(command_prefix="!", intents=discord.Intents(guilds=True))
         self.database = database
         self.authorized_user_id = authorized_user_id
+        self.guild_id = guild_id
+        self.channel_id = channel_id
         self.run_discovery = None
+        self.run_backfill = None
+        self._jobs: dict[str, asyncio.Task] = {}
 
     async def setup_hook(self) -> None:
         _register_commands(self)
-        await self.tree.sync()
+        if self.guild_id:
+            # Guild-scoped commands register immediately. A global sync can take up to an
+            # hour to appear in the client, which looks like a bot that does not work.
+            guild = discord.Object(id=self.guild_id)
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+        else:
+            await self.tree.sync()
 
     def allowed(self, interaction: discord.Interaction) -> bool:
         return self.authorized_user_id is None or interaction.user.id == self.authorized_user_id
+
+    def start_job(self, name: str, coro_factory, report) -> bool:
+        """Run a long job in the background and report to the channel when it finishes.
+
+        A discovery cycle can outlast Discord's 15-minute interaction webhook, so the
+        result is delivered as a channel message instead of an interaction follow-up.
+        """
+        existing = self._jobs.get(name)
+        if existing and not existing.done():
+            return False
+
+        async def runner() -> None:
+            try:
+                summary = report(await coro_factory())
+            except Exception as exc:
+                logger.exception("discord_job_failed", extra={"job": name})
+                summary = f"`{name}` failed: {type(exc).__name__}"
+            await self.report_to_channel(summary)
+
+        self._jobs[name] = asyncio.create_task(runner(), name=f"akaton-discord-{name}")
+        return True
+
+    async def report_to_channel(self, message: str) -> None:
+        if not self.channel_id:
+            return
+        try:
+            channel = self.get_channel(self.channel_id) or await self.fetch_channel(self.channel_id)
+            if hasattr(channel, "send"):
+                await channel.send(message[:2000])
+        except Exception:
+            logger.exception("discord_report_failed", extra={"channel_id": self.channel_id})
 
 
 def _register_commands(bot: AkatonBot) -> None:
@@ -112,11 +168,60 @@ def _register_commands(bot: AkatonBot) -> None:
         if bot.run_discovery is None:
             await interaction.response.send_message("Discovery is not configured.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        counts = await bot.run_discovery()
-        await interaction.followup.send(
-            f"Discovery complete: {counts['queries']} queries, {counts['candidates']} candidates, "
-            f"{counts['processed']} processed, {counts['errors']} errors.",
+        started = bot.start_job(
+            "discovery",
+            bot.run_discovery,
+            lambda counts: (
+                f"Discovery complete: {counts['queries']} queries, "
+                f"{counts['candidates']} candidates, {counts['processed']} processed, "
+                f"{counts['errors']} errors."
+            ),
+        )
+        await interaction.response.send_message(
+            "Discovery started; the summary will be posted in this channel."
+            if started
+            else "Discovery is already running.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(name="backfill", description="Test discovery against historical events")
+    @app_commands.describe(
+        since="Earliest search date in YYYY-MM-DD format",
+        queries="Number of rotated queries to test",
+    )
+    async def backfill(
+        interaction: discord.Interaction,
+        since: str = "2026-08-01",
+        queries: app_commands.Range[int, 1, 20] = 4,
+    ) -> None:
+        if not bot.allowed(interaction):
+            await interaction.response.send_message("Not authorized.", ephemeral=True)
+            return
+        if bot.run_backfill is None:
+            await interaction.response.send_message("Backfill is not configured.", ephemeral=True)
+            return
+        try:
+            since_date = date.fromisoformat(since)
+        except ValueError:
+            await interaction.response.send_message(
+                "Use an ISO date such as `2026-08-01`.", ephemeral=True
+            )
+            return
+        started = bot.start_job(
+            "backfill",
+            lambda: bot.run_backfill(since_date, queries),
+            lambda counts: (
+                "Historical test complete. Past-event and closed-registration gates were "
+                f"bypassed for this run only: {counts['queries']} queries, "
+                f"{counts['candidates']} candidates, {counts['processed']} processed, "
+                f"{counts['errors']} errors."
+            ),
+        )
+        await interaction.response.send_message(
+            f"Historical test from {since_date.isoformat()} started with {queries} queries; "
+            "the summary will be posted in this channel."
+            if started
+            else "A historical test is already running.",
             ephemeral=True,
         )
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +17,7 @@ class RuntimeSettings(BaseSettings):
     discord_bot_token: str | None = None
     discord_channel_id: int | None = None
     discord_user_id: int | None = None
+    discord_guild_id: int | None = None
     search_provider: Literal["brave", "searxng"] = "searxng"
     brave_search_api_key: str | None = None
     searxng_base_url: str = "http://127.0.0.1:8888"
@@ -40,6 +40,8 @@ class AppSettings(BaseModel):
     timezone: str = "Asia/Manila"
     discovery_interval_hours: int = Field(default=6, ge=1)
     discovery_queries_per_run: int = Field(default=8, ge=1)
+    discovery_concurrency: int = Field(default=6, ge=1, le=32)
+    llm_concurrency: int = Field(default=1, ge=1, le=8)
     monthly_search_budget: int = Field(default=950, ge=1)
     refresh_interval_hours: int = Field(default=24, ge=1)
     notification_threshold: int = Field(default=65, ge=0, le=100)
@@ -88,8 +90,7 @@ def load_config(root: Path | None = None, *, allow_example_profile: bool = False
         profile_path = config_dir / "profile.example.yaml"
     runtime = RuntimeSettings(_env_file=project_root / ".env")
     app = AppSettings.model_validate(_read_yaml(config_dir / "settings.yaml"))
-    if os.getenv("NOTIFICATIONS_ENABLED") is not None:
-        app.notifications_enabled = runtime.notifications_enabled
+    app.notifications_enabled = runtime.notifications_enabled
     try:
         profile = ParticipantProfile.model_validate(_read_yaml(profile_path))
     except ValidationError as exc:
