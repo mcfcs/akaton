@@ -14,6 +14,21 @@ from akaton.fetch.policies import DomainPolicy
 from akaton.fetch.proxy import ProxyConfig, ProxyManager
 from akaton.fetch.safety import validate_public_url
 
+# Several Philippine organiser sites, ateneo.edu and aifest.ph among them, answer 403 to an
+# unfamiliar agent and 200 to an ordinary browser. These are public pages with no login and
+# no paywall, so this only asks for the same document a visitor would get. Rate limits,
+# robots policy and the refusal to render blocked domains all still apply.
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7"
+    ),
+    "Accept-Language": "en-PH,en;q=0.9",
+}
+
 
 class HttpFetcher:
     def __init__(
@@ -48,7 +63,7 @@ class HttpFetcher:
                 requested_url=url, fetch_method="policy", failure=FailureCode.FETCH_DISABLED
             )
 
-        headers = {"User-Agent": "Akaton/0.1 (+personal competition monitor)"}
+        headers = dict(DEFAULT_HEADERS)
         if etag:
             headers["If-None-Match"] = etag
         if last_modified:

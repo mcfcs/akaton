@@ -55,11 +55,20 @@ class DiscoveryJob:
         ]
         selected = choose_due_queries(all_queries, history, query_count, now=now)
         counts = {"queries": 0, "candidates": 0, "processed": 0, "errors": 0}
-        for item in selected:
+        pause = self.config.app.search_interval_seconds
+        for index, item in enumerate(selected):
+            if index and pause:
+                # Space the queries out. SearXNG scrapes consumer search pages, and a
+                # back-to-back burst gets its engines suspended for the whole run.
+                await asyncio.sleep(pause)
             query = item.query
             freshness = item.freshness
             if since:
-                query = f"{query} after:{since.isoformat()}"
+                # Date range is expressed through freshness/time_range, which every engine
+                # understands. An `after:` operator is Google and Brave syntax: Mojeek,
+                # Bing and the rest return nothing for it, so it silently emptied backfill
+                # runs whenever the big engines were throttled. Seeds older than `since`
+                # are filtered out below by published_hint instead.
                 freshness = _freshness_for_since(since, now.date())
             try:
                 page = await self.provider.search(SearchRequest(query=query, freshness=freshness))
@@ -71,9 +80,11 @@ class DiscoveryJob:
                 page = None
                 error = type(exc).__name__
             if page is not None and not page.results and page.unresponsive_engines:
-                # Record the throttled engines rather than an empty success, so a dead
-                # search backend is visible instead of looking like a quiet week.
-                error = "no engine responded: " + "; ".join(page.unresponsive_engines)
+                # Zero results while engines are unavailable is not evidence of absence:
+                # record it so a throttled backend is visible instead of looking like a
+                # quiet week. Engines that answered with nothing are not listed here, so
+                # this names the ones that were actually unreachable.
+                error = "no results; engines unavailable: " + "; ".join(page.unresponsive_engines)
             async with self.database.session() as session:
                 await Repository(session).record_search_run(
                     self.provider.name,

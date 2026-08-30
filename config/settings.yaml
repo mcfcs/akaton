@@ -7,6 +7,9 @@ discovery_concurrency: 6
 # Extractions allowed to run at once. Ollama serialises requests per model, so raising
 # this queues them on the server until the client times out rather than going faster.
 llm_concurrency: 1
+# Seconds between search queries. SearXNG scrapes consumer search engines, and firing a
+# run's queries back to back gets them suspended for "too many requests" or a CAPTCHA.
+search_interval_seconds: 6
 monthly_search_budget: 950
 refresh_interval_hours: 24
 notification_threshold: 65

@@ -17,3 +17,37 @@ server:
   image_proxy: false
   # Overridden by the SEARXNG_SECRET environment variable in compose.free.yaml.
   secret_key: "replace-through-environment"
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+
+# Only four general web engines ship enabled (brave, duckduckgo, google cse, startpage).
+# They scrape consumer search pages, so a burst of discovery runs gets all four suspended
+# at once for "too many requests" or a CAPTCHA, and SearXNG then returns HTTP 200 with no
+# results at all. Widening the pool keeps discovery working while individual engines are
+# in timeout. Mojeek, Wiby, Marginalia and Yep run their own indexes rather than scraping,
+# so they degrade independently of the big four.
+engines:
+  - name: mojeek
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: duckduckgo web
+    disabled: false
+  - name: yahoo
+    disabled: false
+  - name: mwmbl
+    disabled: false
+  - name: wiby
+    disabled: false
+  - name: yep
+    disabled: false
+  - name: seznam
+    disabled: false
+  - name: crowdview
+    disabled: false

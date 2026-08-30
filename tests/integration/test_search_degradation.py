@@ -53,9 +53,12 @@ class UnusedPipeline:
 
 
 async def test_throttled_search_is_recorded_as_failed_not_as_a_quiet_run(config):
+    from dataclasses import replace
+
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.create_schema()
-    job = DiscoveryJob(database, config, ThrottledProvider(), UnusedPipeline())
+    fast = replace(config, app=config.app.model_copy(update={"search_interval_seconds": 0}))
+    job = DiscoveryJob(database, fast, ThrottledProvider(), UnusedPipeline())
 
     counts = await job.run(query_limit=2)
 

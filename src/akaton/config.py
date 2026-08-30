@@ -42,6 +42,7 @@ class AppSettings(BaseModel):
     discovery_queries_per_run: int = Field(default=8, ge=1)
     discovery_concurrency: int = Field(default=6, ge=1, le=32)
     llm_concurrency: int = Field(default=1, ge=1, le=8)
+    search_interval_seconds: float = Field(default=6.0, ge=0, le=300)
     monthly_search_budget: int = Field(default=950, ge=1)
     refresh_interval_hours: int = Field(default=24, ge=1)
     notification_threshold: int = Field(default=65, ge=0, le=100)
