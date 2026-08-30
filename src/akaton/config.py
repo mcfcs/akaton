@@ -18,8 +18,9 @@ class RuntimeSettings(BaseSettings):
     discord_bot_token: str | None = None
     discord_channel_id: int | None = None
     discord_user_id: int | None = None
-    search_provider: str = "brave"
+    search_provider: Literal["brave", "searxng"] = "searxng"
     brave_search_api_key: str | None = None
+    searxng_base_url: str = "http://127.0.0.1:8888"
     llm_provider: Literal["ollama", "openai", "disabled"] = "ollama"
     openai_api_key: str | None = None
     openai_model: str | None = None
@@ -27,6 +28,10 @@ class RuntimeSettings(BaseSettings):
     ollama_model: str = "qwen3.5:27b"
     proxy_mode: str = "auto"
     database_url: str = "sqlite+aiosqlite:///data/akaton.db"
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = Field(default=8765, ge=1, le=65535)
+    dashboard_token: str | None = None
+    dashboard_auto_start: bool = True
     notifications_enabled: bool = False
     log_level: str = "INFO"
 

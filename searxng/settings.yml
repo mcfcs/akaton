@@ -1,0 +1,19 @@
+use_default_settings: true
+
+general:
+  instance_name: Akaton Private Search
+  debug: false
+
+search:
+  safe_search: 1
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "0.0.0.0"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  # Overridden by the SEARXNG_SECRET environment variable in compose.free.yaml.
+  secret_key: "replace-through-environment"

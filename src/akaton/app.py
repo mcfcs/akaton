@@ -5,13 +5,17 @@ import asyncio
 import importlib.util
 from zoneinfo import ZoneInfo
 
+import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from akaton.config import ConfigBundle, load_config
+from akaton.dashboard.runtime import MonitorController
+from akaton.dashboard.web import create_dashboard
 from akaton.discord.bot import AkatonBot
 from akaton.discord.notifier import DiscordNotifier, reconcile_pending_notifications
 from akaton.discovery.adapters import DevpostAdapter, KaggleAdapter
 from akaton.discovery.brave import BraveSearchProvider
+from akaton.discovery.searxng import SearXNGSearchProvider
 from akaton.fetch.browser import PatchrightRenderer
 from akaton.fetch.http import HttpFetcher
 from akaton.fetch.manager import FetchManager
@@ -54,49 +58,42 @@ def _dependencies(config: ConfigBundle, notifier=None, *, database: Database | N
     return database, fetcher, pipeline
 
 
-async def _discover_once(config: ConfigBundle) -> None:
-    database, fetcher, pipeline = _dependencies(config)
-    await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
-    if not config.runtime.brave_search_api_key:
-        raise ValueError("BRAVE_SEARCH_API_KEY is required for discovery")
-    provider = BraveSearchProvider(config.runtime.brave_search_api_key)
+def _search_provider(config: ConfigBundle):
+    if config.runtime.search_provider == "brave":
+        if not config.runtime.brave_search_api_key:
+            raise ValueError("BRAVE_SEARCH_API_KEY is required when SEARCH_PROVIDER=brave")
+        return BraveSearchProvider(config.runtime.brave_search_api_key)
+    return SearXNGSearchProvider(config.runtime.searxng_base_url)
+
+
+def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
     adapters = [DevpostAdapter(fetcher)]
     if config.sources.get("structured_sources", {}).get("kaggle", {}).get("enabled"):
         adapters.append(KaggleAdapter())
-    counts = await DiscoveryJob(database, config, provider, pipeline, adapters).run()
-    print(counts)
-    await database.close()
+    return adapters
 
 
-async def _run(config: ConfigBundle) -> None:
-    if not config.runtime.discord_bot_token or not config.runtime.discord_channel_id:
-        raise ValueError("DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required to run the bot")
-    database = Database(config.runtime.database_url)
-    await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
-    bot = AkatonBot(database=database, authorized_user_id=config.runtime.discord_user_id)
-    notifier = DiscordNotifier(
-        bot, config.runtime.discord_channel_id, user_id=config.runtime.discord_user_id
+def _monitor_jobs(
+    config: ConfigBundle,
+    database: Database,
+    pipeline: CandidatePipeline,
+    fetcher: FetchManager,
+):
+    provider = _search_provider(config)
+    discovery = DiscoveryJob(
+        database, config, provider, pipeline, _source_adapters(config, fetcher)
     )
-    _, fetcher, pipeline = _dependencies(config, notifier=notifier, database=database)
-    if not config.runtime.brave_search_api_key:
-        raise ValueError("BRAVE_SEARCH_API_KEY is required")
-    provider = BraveSearchProvider(config.runtime.brave_search_api_key)
-    adapters = [DevpostAdapter(fetcher)]
-    if config.sources.get("structured_sources", {}).get("kaggle", {}).get("enabled"):
-        adapters.append(KaggleAdapter())
-    discovery = DiscoveryJob(database, config, provider, pipeline, adapters)
     refresh = RefreshJob(database, pipeline)
     maintenance = MaintenanceJob(database, config.app.snapshot_retention_days)
-    bot.run_discovery = discovery.run
-    reconciliation_complete = False
+    return discovery, refresh, maintenance
 
-    @bot.event
-    async def on_ready() -> None:
-        nonlocal reconciliation_complete
-        if not reconciliation_complete:
-            await reconcile_pending_notifications(database, notifier)
-            reconciliation_complete = True
 
+def _scheduler(
+    config: ConfigBundle,
+    discovery: DiscoveryJob,
+    refresh: RefreshJob,
+    maintenance: MaintenanceJob,
+) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(config.app.timezone))
     scheduler.add_job(
         discovery.run,
@@ -125,10 +122,87 @@ async def _run(config: ConfigBundle) -> None:
         coalesce=True,
         id="maintenance",
     )
-    scheduler.start()
+    return scheduler
+
+
+def _web_server(
+    config: ConfigBundle, database: Database, controller: MonitorController
+) -> uvicorn.Server:
+    application = create_dashboard(database, controller, config)
+    server_config = uvicorn.Config(
+        application,
+        host=config.runtime.dashboard_host,
+        port=config.runtime.dashboard_port,
+        log_config=None,
+        access_log=False,
+    )
+    return uvicorn.Server(server_config)
+
+
+async def _discover_once(config: ConfigBundle) -> None:
+    database, fetcher, pipeline = _dependencies(config)
+    await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
+    discovery, _, _ = _monitor_jobs(config, database, pipeline, fetcher)
+    counts = await discovery.run()
+    print(counts)
+    await database.close()
+
+
+async def _dashboard(config: ConfigBundle) -> None:
+    database, fetcher, pipeline = _dependencies(config)
+    await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
+    discovery, refresh, maintenance = _monitor_jobs(config, database, pipeline, fetcher)
+    scheduler = _scheduler(config, discovery, refresh, maintenance)
+    scheduler.start(paused=not config.runtime.dashboard_auto_start)
+    controller = MonitorController(scheduler, discovery.run, refresh.run)
+    server = _web_server(config, database, controller)
     try:
-        await bot.start(config.runtime.discord_bot_token)
+        await server.serve()
     finally:
+        scheduler.shutdown(wait=False)
+        await database.close()
+
+
+async def _run(config: ConfigBundle) -> None:
+    if not config.runtime.discord_bot_token or not config.runtime.discord_channel_id:
+        raise ValueError("DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required to run the bot")
+    database = Database(config.runtime.database_url)
+    await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
+    bot = AkatonBot(database=database, authorized_user_id=config.runtime.discord_user_id)
+    notifier = DiscordNotifier(
+        bot, config.runtime.discord_channel_id, user_id=config.runtime.discord_user_id
+    )
+    _, fetcher, pipeline = _dependencies(config, notifier=notifier, database=database)
+    discovery, refresh, maintenance = _monitor_jobs(config, database, pipeline, fetcher)
+    bot.run_discovery = discovery.run
+    reconciliation_complete = False
+
+    @bot.event
+    async def on_ready() -> None:
+        nonlocal reconciliation_complete
+        if not reconciliation_complete:
+            await reconcile_pending_notifications(database, notifier)
+            reconciliation_complete = True
+
+    scheduler = _scheduler(config, discovery, refresh, maintenance)
+    scheduler.start(paused=not config.runtime.dashboard_auto_start)
+    controller = MonitorController(scheduler, discovery.run, refresh.run)
+    server = _web_server(config, database, controller)
+    bot_task = asyncio.create_task(bot.start(config.runtime.discord_bot_token), name="discord")
+    web_task = asyncio.create_task(server.serve(), name="dashboard")
+    try:
+        done, _ = await asyncio.wait({bot_task, web_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            if error := task.exception():
+                raise error
+    finally:
+        server.should_exit = True
+        if not bot.is_closed():
+            await bot.close()
+        for task in (bot_task, web_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(bot_task, web_task, return_exceptions=True)
         scheduler.shutdown(wait=False)
         await database.close()
 
@@ -140,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--allow-example-profile", action="store_true")
     subparsers.add_parser("init-db")
     subparsers.add_parser("discover-once")
+    subparsers.add_parser("dashboard")
     subparsers.add_parser("run")
     return parser
 
@@ -162,6 +237,8 @@ def main() -> None:
         print("Database initialized.")
     elif args.command == "discover-once":
         asyncio.run(_discover_once(config))
+    elif args.command == "dashboard":
+        asyncio.run(_dashboard(config))
     else:
         asyncio.run(_run(config))
 

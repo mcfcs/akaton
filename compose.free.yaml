@@ -17,6 +17,7 @@ services:
   akaton:
     build: .
     restart: unless-stopped
+    command: ["akaton", "dashboard"]
     env_file: .env
     environment:
       SEARCH_PROVIDER: searxng
