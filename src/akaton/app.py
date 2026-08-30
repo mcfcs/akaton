@@ -16,6 +16,8 @@ from akaton.discord.bot import AkatonBot
 from akaton.discord.notifier import DiscordNotifier, reconcile_pending_notifications
 from akaton.discovery.adapters import DevpostAdapter, KaggleAdapter
 from akaton.discovery.brave import BraveSearchProvider
+from akaton.discovery.facebook import FacebookGroupSource
+from akaton.discovery.facebook_parse import groups_from_config
 from akaton.discovery.searxng import SearXNGSearchProvider
 from akaton.discovery.shreddit import DEFAULT_SUBREDDITS, DEFAULT_TERMS, ShredditSource
 from akaton.fetch.browser import PatchrightRenderer
@@ -87,6 +89,24 @@ def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
                 max_age_days=int(reddit.get("max_age_days", 90)),
                 challenge_wait_seconds=float(reddit.get("challenge_wait_seconds", 0)),
                 max_posts_per_term=int(reddit.get("max_posts_per_term", 5)),
+            )
+        )
+    facebook = structured.get("facebook", {})
+    if facebook.get("enabled"):
+        adapters.append(
+            FacebookGroupSource(
+                proxies=getattr(fetcher, "proxies", None),
+                profile_dir=config.root / facebook.get("profile_dir", "data/.facebook-profile"),
+                groups=groups_from_config(facebook),
+                headless=bool(facebook.get("headless", False)),
+                max_age_days=int(facebook.get("max_age_days", 90)),
+                login_wait_seconds=float(facebook.get("login_wait_seconds", 0)),
+                use_proxy=bool(facebook.get("use_proxy", False)),
+                scroll_rounds=int(facebook.get("scroll_rounds", 10)),
+                max_posts=int(facebook.get("max_posts", 40)),
+                max_permalinks=int(facebook.get("max_permalinks", 25)),
+                email=config.runtime.facebook_email,
+                password=config.runtime.facebook_password,
             )
         )
     return adapters

@@ -141,4 +141,29 @@ structured_sources:
     # Each term costs one search plus up to this many post pages, so the whole run is
     # bounded at subreddits x terms x (1 + max_posts_per_term) page loads.
     max_posts_per_term: 5
+  # Facebook groups through a headed Chrome session, same Patchright approach as
+  # uyam/shreddit. HTTP fetch of facebook.com stays disabled: a logged-out request
+  # is a JavaScript shell. Requires the browser extra, Google Chrome, and one
+  # manual login in the persistent profile. Direct connection by default; a proxy
+  # after a local login is a common Facebook checkpoint trigger.
+  # Disabled by default: enable it once you have logged in.
+  facebook:
+    enabled: true
+    cadence_hours: 6
+    max_age_days: 62
+    headless: false
+    # Seconds to hold a visible login or checkpoint open. Leave at 0 for an
+    # unattended monitor: it then skips the run instead of stalling.
+    login_wait_seconds: 600
+    # Proxy login is what made Facebook serve an endless captcha. Login and
+    # scrape on the local connection; outbound event pages still use proxies.txt.
+    use_proxy: false
+    profile_dir: data/.facebook-profile
+    max_posts: 60
+    max_permalinks: 35
+    scroll_rounds: 16
+    groups:
+      - url: https://www.facebook.com/groups/philhacks/
+        name: philhacks
+        location: Philippines
 

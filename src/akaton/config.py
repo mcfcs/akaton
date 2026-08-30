@@ -34,6 +34,8 @@ class RuntimeSettings(BaseSettings):
     dashboard_auto_start: bool = True
     notifications_enabled: bool = False
     log_level: str = "INFO"
+    facebook_email: str | None = None
+    facebook_password: str | None = Field(default=None, repr=False)
 
 
 class AppSettings(BaseModel):

@@ -340,6 +340,8 @@ def extract_deterministically(
             bool(facts.registration_url),
             bool(facts.registration_deadline.value or facts.event_start.value),
             facts.location.confidence >= 0.7,
+            facts.document_kind
+            in {DocumentKind.EVENT_ANNOUNCEMENT, DocumentKind.REGISTRATION_OPEN},
         )
     )
     confidence = min(0.95, 0.35 + signals * 0.12)

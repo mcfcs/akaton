@@ -25,6 +25,8 @@ domains:
     requests_per_minute: 3
     browser: js_evidence
   facebook.com:
+    # HTTP fetch stays disabled: search snippets are JavaScript shells. The
+    # facebook structured source drives its own headed Chrome session instead.
     browser: disabled
     proxy: never
     fetch: disabled

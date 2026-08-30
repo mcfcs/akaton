@@ -15,10 +15,11 @@ until you explicitly enable them.
 - Search-provider and source-adapter interfaces, with private SearXNG, Brave Search, and Devpost
   implementations.
 - An optional Kaggle API adapter.
-- No account login or authenticated social scraping. Facebook, LinkedIn, and Instagram are
-  blocked in `config/domains.yaml`; results on those domains are rejected as
-  `SEARCH_SNIPPET_ONLY` without a request, because they serve a JavaScript shell to
-  anonymous clients and nothing usable can be extracted from it.
+- Optional headed Chrome sources for Reddit and Facebook groups, using Patchright the
+  same way uyam does. LinkedIn and Instagram stay blocked in `config/domains.yaml`;
+  Facebook search snippets are still rejected as `SEARCH_SNIPPET_ONLY` because the
+  HTTP fetcher cannot read them. The facebook adapter is a separate headed session
+  with a persistent login, not that HTTP path.
 - HTTP-first fetching, HTML/PDF extraction, conditional requests, conservative domain limits, and
   Patchright Chromium only when a policy permits browser fallback.
 - SSRF protection on the initial request and redirects, bounded downloads, retries, rate-limit
@@ -138,7 +139,8 @@ produce targeted searches. To add or disable a query, edit YAML rather than appl
 | Rotating web queries | Organiser sites, news, aggregators | Depends on SearXNG's upstream engines |
 | Organizer `site:` queries | One per listed organizer domain | Only finds organizers you have listed |
 | Devpost API | Open hackathons naming the Philippines or Manila, plus open online ones | Few PH-located events are ever open there |
-| Reddit, via uyam | Philippine subreddits | Needs uyam's collector to have run |
+| Reddit, via headed Chrome | Philippine subreddits | Needs Patchright, Chrome, and a desktop session |
+| Facebook groups, via headed Chrome | philhacks posts and replies | Needs a one-time Facebook login in the persistent profile |
 
 Devpost is queried through `https://devpost.com/api/hackathons` with `status[]=open` plus a
 Philippines, Manila, or online filter. It previously scraped `/hackathons?status=open`, which is
@@ -146,12 +148,10 @@ every open hackathon on the site regardless of country, so most of what it produ
 unenterable. Note that Devpost currently lists no *open* Philippine hackathon at all: all 18 that
 match "philippines" have ended, so the online query is what actually contributes.
 
-Facebook is where a great many Philippine competitions are announced, and Akaton cannot read it.
-Facebook, Instagram and LinkedIn serve a JavaScript shell to a logged-out client, and Akaton does
-not log in, so those results are rejected as `SEARCH_SNIPPET_ONLY`. Search snippets still surface
-such posts, and the organizer behind one can be added to `config/sources.yaml` so its own site is
-queried directly from then on. That is the practical route from a Facebook post to a monitored
-source.
+Instagram and LinkedIn still serve a JavaScript shell to a logged-out client, so those search
+hits are rejected as `SEARCH_SNIPPET_ONLY`. Facebook search snippets are treated the same way.
+The dedicated `facebook` adapter is the path that actually reads a group: it drives headed
+Chrome, not the HTTP fetcher.
 
 ### Reddit
 
@@ -189,6 +189,31 @@ own body on the candidate instead, since there is nothing to fetch. Everything a
 ordinary pipeline, so a Reddit lead still has to clear the same authority and confidence gates as
 any other candidate; a passing mention of a hackathon in an unrelated thread is found by the
 keyword filter and then dropped by them.
+
+### Facebook groups through Patchright
+
+A great many Philippine competitions are announced in
+[philhacks](https://www.facebook.com/groups/philhacks/) rather than on a crawlable site, and
+the event is sometimes only in a reply. A post such as
+[this one](https://www.facebook.com/groups/philhacks/permalink/4116540755148003/) is just
+"any upcoming hackathon near Manila?"; the listing is in a comment. The adapter therefore
+scrolls the group feed, opens threads that look incomplete, and classifies the post and
+every reply independently.
+
+Enable it under `structured_sources.facebook` in `config/sources.yaml` after the same browser
+extra as Reddit. Log in once, including captcha and two-step verification, in the headed
+Chrome window (`python tools/facebook_login.py`). The session is stored in
+`data/.facebook-profile` and the proxy Facebook accepted is remembered, so later scrapes
+reuse that login instead of prompting 2FA every cycle. A new IP from a different proxy
+will often force another checkpoint; that is why the Facebook adapter stays on one sticky
+proxy rather than rotating. Optional `FACEBOOK_EMAIL` / `FACEBOOK_PASSWORD` in `.env` only
+fill the first login form.
+
+A reply or post that links to Devpost, Unstop, Luma, Eventbrite, `.gov.ph`, or `.edu.ph` is
+followed as the authoritative page. A Google Form or an unlisted site stays on the Facebook
+document (social authority 75, which clears the verifier) with the outbound URL kept as a
+registration link. Question posts, teammate-only posts, recaps, and jobs are dropped even
+when they mention the word "hackathon".
 
 The verifier accepts a lone source only at authority 60 or above, and an unlisted site scores 50,
 so it is rejected with `LOW_AUTHORITY`. `platforms` in `config/sources.yaml` admits trusted
@@ -348,6 +373,8 @@ patchright install chromium
 
 Browser fallback is never used for configured blocked social domains or HTTP 401/403/404/429
 responses. It has isolated contexts, resource cleanup, navigation bounds, and no login workflow.
+The Reddit and Facebook structured sources are a different path: they launch headed Chrome with
+a persistent profile so a person can solve a challenge or log in once.
 
 ## Proxies
 

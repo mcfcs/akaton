@@ -53,6 +53,8 @@ class CandidateSeed(BaseModel):
     # A Reddit permalink serves only a JavaScript shell to a logged-out client, so a
     # self-post's body has to travel with the seed or it is lost.
     content: str | None = None
+    # Outbound links collected with that prefetched body (registration forms, etc.).
+    links: list[str] = Field(default_factory=list)
 
 
 class FetchAttempt(BaseModel):

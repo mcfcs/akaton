@@ -420,6 +420,7 @@ def _prefetched_result(seed: CandidateSeed) -> FetchResult:
         content_type="text/plain",
         title=seed.title,
         text=text,
+        links=list(seed.links or []),
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         usable=bool(text.strip()),
     )
