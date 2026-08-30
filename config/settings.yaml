@@ -1,0 +1,12 @@
+timezone: Asia/Manila
+discovery_interval_hours: 6
+discovery_queries_per_run: 8
+monthly_search_budget: 950
+refresh_interval_hours: 24
+notification_threshold: 65
+high_priority_threshold: 80
+possible_threshold: 50
+snapshot_retention_days: 90
+max_download_bytes: 5242880
+notifications_enabled: false
+

@@ -1,0 +1,50 @@
+groups:
+  hot:
+    cadence_hours: 6
+    weight: 5
+    freshness: pw
+    queries:
+      - '"registration now open" hackathon Philippines'
+      - '"applications now open" hackathon Philippines'
+      - '"register now" "case competition" Philippines'
+      - '"calling all students" competition Philippines'
+      - 'ideathon Philippines registration'
+      - 'innovation challenge Philippines registration'
+  metro:
+    cadence_hours: 12
+    weight: 4
+    freshness: pm
+    queries:
+      - 'hackathon Metro Manila registration'
+      - 'hackathon Makati OR BGC OR Taguig registration'
+      - 'hackathon "Quezon City" OR Pasig registration'
+      - '"business case competition" Metro Manila'
+      - '"consulting competition" Philippines students'
+  categories:
+    cadence_hours: 24
+    weight: 3
+    freshness: pm
+    queries:
+      - 'startup competition Philippines'
+      - 'datathon Philippines registration'
+      - 'AI competition Philippines students'
+      - 'product building competition Philippines'
+      - 'strategy competition Philippines students'
+  social:
+    cadence_hours: 12
+    weight: 4
+    freshness: pm
+    queries:
+      - 'site:linkedin.com/posts hackathon Philippines registration'
+      - 'site:linkedin.com/posts "case competition" Philippines'
+      - 'site:facebook.com hackathon Philippines registration'
+      - 'site:facebook.com "case competition" Philippines'
+      - 'site:instagram.com hackathon Philippines'
+  filipino:
+    cadence_hours: 72
+    weight: 1
+    freshness: pm
+    queries:
+      - 'paligsahan teknolohiya Pilipinas pagpaparehistro'
+      - '"bukas ang registration" hackathon Pilipinas'
+

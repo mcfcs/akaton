@@ -1,0 +1,24 @@
+weights:
+  geography: 30
+  eligibility: 20
+  category: 15
+  topic: 10
+  actionability: 15
+  authority: 5
+  lead_time: 5
+thresholds:
+  high: 80
+  recommended: 65
+  possible: 50
+preferred_categories:
+  - HACKATHON
+  - BUSINESS_CASE
+preferred_topics:
+  - ai
+  - software
+  - data
+  - technology
+  - consulting
+  - strategy
+  - business
+

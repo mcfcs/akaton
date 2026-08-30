@@ -1,0 +1,24 @@
+country_of_residence: PH
+preferred_cities:
+  - Manila
+  - Makati
+  - Taguig
+  - Quezon City
+  - Pasig
+  - Mandaluyong
+  - Pasay
+  - San Juan
+nearby_regions:
+  - Cavite
+  - Laguna
+  - Rizal
+  - Bulacan
+participant_roles:
+  - university_student
+education_level: undergraduate
+university: null
+degree_area: null
+graduation_year: null
+age: null
+allow_online_international: true
+

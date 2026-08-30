@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "akaton"
+version = "0.1.0"
+description = "Personal Discord bot for discovering Philippine hackathons and competitions"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14,<2",
+  "aiosqlite>=0.20,<1",
+  "beautifulsoup4>=4.12,<5",
+  "discord.py>=2.5,<3",
+  "httpx>=0.28,<1",
+  "openai>=1.68,<3",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "pypdf>=5.3,<7",
+  "PyYAML>=6.0,<7",
+  "rapidfuzz>=3.12,<4",
+  "SQLAlchemy>=2.0,<3",
+  "trafilatura>=2.0,<3",
+  "APScheduler>=3.11,<4",
+]
+
+[project.optional-dependencies]
+browser = ["patchright>=1.50,<2"]
+kaggle = ["kaggle>=1.7,<2"]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<2",
+  "pytest-cov>=6,<8",
+  "respx>=0.22,<1",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+akaton = "akaton.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/akaton"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+

@@ -1,0 +1,16 @@
+.env
+.venv/
+config/profile.yaml
+proxies.txt
+data/
+*.db
+*.sqlite3
+logs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+browser-profiles/
+test-results/
+

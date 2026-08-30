@@ -1,0 +1,39 @@
+default:
+  requests_per_minute: 6
+  concurrency: 1
+  timeout_seconds: 15
+  retries: 2
+  browser: js_evidence
+  proxy: direct
+domains:
+  gov.ph:
+    match: suffix
+    requests_per_minute: 3
+  edu.ph:
+    match: suffix
+    requests_per_minute: 3
+  devpost.com:
+    requests_per_minute: 4
+  eventbrite.com:
+    requests_per_minute: 4
+  unstop.com:
+    requests_per_minute: 4
+  forms.gle:
+    requests_per_minute: 3
+    browser: js_evidence
+  docs.google.com:
+    requests_per_minute: 3
+    browser: js_evidence
+  facebook.com:
+    browser: disabled
+    proxy: never
+    fetch: disabled
+  linkedin.com:
+    browser: disabled
+    proxy: never
+    fetch: disabled
+  instagram.com:
+    browser: disabled
+    proxy: never
+    fetch: disabled
+

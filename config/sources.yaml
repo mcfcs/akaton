@@ -1,0 +1,76 @@
+organizers:
+  - id: dict
+    name: Department of Information and Communications Technology
+    aliases: [DICT, DICT Philippines]
+    domains: [dict.gov.ph]
+    category: government
+    authority: 90
+    enabled: true
+  - id: dost
+    name: Department of Science and Technology
+    aliases: [DOST, DOST Philippines]
+    domains: [dost.gov.ph]
+    category: government
+    authority: 90
+    enabled: true
+  - id: dti
+    name: Department of Trade and Industry
+    aliases: [DTI, DTI Philippines]
+    domains: [dti.gov.ph]
+    category: government
+    authority: 90
+    enabled: true
+  - id: ateneo
+    name: Ateneo de Manila University
+    aliases: [Ateneo, ADMU]
+    domains: [ateneo.edu]
+    category: university
+    authority: 90
+    enabled: true
+  - id: up
+    name: University of the Philippines
+    aliases: [UP, UP Diliman]
+    domains: [up.edu.ph]
+    category: university
+    authority: 90
+    enabled: true
+  - id: dlsu
+    name: De La Salle University
+    aliases: [DLSU, De La Salle]
+    domains: [dlsu.edu.ph]
+    category: university
+    authority: 90
+    enabled: true
+  - id: ust
+    name: University of Santo Tomas
+    aliases: [UST]
+    domains: [ust.edu.ph]
+    category: university
+    authority: 90
+    enabled: true
+  - id: mapua
+    name: Mapua University
+    aliases: [Mapua, Mapúa]
+    domains: [mapua.edu.ph]
+    category: university
+    authority: 90
+    enabled: true
+  - id: devcon
+    name: DEVCON Philippines
+    aliases: [DEVCON PH, DEVCON]
+    domains: [devcon.ph]
+    category: community
+    authority: 80
+    enabled: true
+query_templates:
+  - 'site:{domain} hackathon registration'
+  - 'site:{domain} "case competition"'
+  - '"{name}" innovation challenge registration'
+structured_sources:
+  devpost:
+    enabled: true
+    cadence_hours: 24
+  kaggle:
+    enabled: false
+    cadence_hours: 24
+

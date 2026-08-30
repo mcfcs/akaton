@@ -1,0 +1,8 @@
+services:
+  akaton:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config/profile.yaml:/app/config/profile.yaml:ro

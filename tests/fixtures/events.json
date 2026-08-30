@@ -1,0 +1,182 @@
+[
+  {
+    "id": "upcoming_manila_hackathon",
+    "title": "Manila AI Hackathon 2026",
+    "text": "Registration is now open to college students nationwide in the Philippines. Registration deadline October 5, 2026. Event date October 20, 2026 at Manila City Hall. Build AI and software solutions.",
+    "link": "https://forms.gle/manila2026",
+    "category": "HACKATHON",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": true
+  },
+  {
+    "id": "upcoming_bgc_hackathon",
+    "title": "BGC FinTech Hackathon 2026",
+    "text": "Apply now for the BGC FinTech Hackathon. Open to university students in the Philippines. Registration deadline October 12, 2026. Event date November 2, 2026 in Bonifacio Global City.",
+    "link": "https://example.com/register",
+    "category": "HACKATHON",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": true
+  },
+  {
+    "id": "university_business_case",
+    "title": "National Business Case Competition 2026",
+    "text": "Calling all university students nationwide in the Philippines. Registration deadline October 8, 2026. Competition date October 25, 2026 at De La Salle University, Manila. Form your team for this business case competition.",
+    "link": "https://example.com/apply",
+    "category": "BUSINESS_CASE",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": true
+  },
+  {
+    "id": "online_global_open_ph",
+    "title": "Global Data Challenge 2026",
+    "text": "This online global competition is open to all countries, including participants from the Philippines. Apply now. Registration deadline October 14, 2026. Event date November 5, 2026.",
+    "link": "https://example.com/register",
+    "category": "DATATHON",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": true
+  },
+  {
+    "id": "finished_results",
+    "title": "Manila Hackathon 2025 Results",
+    "text": "Results from the hackathon. Congratulations to the winning team and all champions of Manila Hackathon 2025.",
+    "category": "HACKATHON",
+    "kind": "WINNER_ANNOUNCEMENT",
+    "accepted": false
+  },
+  {
+    "id": "winner_announcement",
+    "title": "Winners of the National Case Competition",
+    "text": "Winner announcement: congratulations to Team One, the winners of this business case competition.",
+    "category": "BUSINESS_CASE",
+    "kind": "WINNER_ANNOUNCEMENT",
+    "accepted": false
+  },
+  {
+    "id": "registration_closed",
+    "title": "QC Innovation Challenge 2026",
+    "text": "The innovation challenge will be held in Quezon City. Registration closed and applications are no longer accepting responses. Event date October 20, 2026.",
+    "category": "INNOVATION_CHALLENGE",
+    "kind": "EVENT_ANNOUNCEMENT",
+    "accepted": false
+  },
+  {
+    "id": "cancelled_event",
+    "title": "Pasig Startup Competition 2026",
+    "text": "Registration is now open for this startup competition in Pasig, Philippines. Registration deadline October 5, 2026. The event has been cancelled.",
+    "link": "https://example.com/register",
+    "category": "STARTUP_COMPETITION",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": false
+  },
+  {
+    "id": "postponed_event",
+    "title": "Makati Ideathon 2026",
+    "text": "Registration is now open for the Makati ideathon, but the event is postponed. Registration deadline October 20, 2026. Open to Philippine students.",
+    "link": "https://example.com/register",
+    "category": "IDEATHON",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": true
+  },
+  {
+    "id": "irrelevant_conference",
+    "title": "Technology Conference Manila",
+    "text": "Join this technology conference in Manila for talks and networking. No competition will be held.",
+    "category": "OTHER_COMPETITION",
+    "kind": "CONFERENCE",
+    "accepted": false
+  },
+  {
+    "id": "webinar",
+    "title": "AI Careers Webinar",
+    "text": "Join our online webinar about AI careers and learning resources.",
+    "category": "UNKNOWN",
+    "kind": "WEBINAR",
+    "accepted": false
+  },
+  {
+    "id": "job_advertisement",
+    "title": "Software Engineer Job Opening",
+    "text": "We are hiring. Apply for this role in Taguig, Philippines.",
+    "category": "UNKNOWN",
+    "kind": "JOB_POSTING",
+    "accepted": false
+  },
+  {
+    "id": "ambiguous_no_date",
+    "title": "Future Manila Hackathon",
+    "text": "A hackathon for technology builders in Manila, Philippines. More details will be announced.",
+    "category": "HACKATHON",
+    "kind": "EVENT_ANNOUNCEMENT",
+    "accepted": false
+  },
+  {
+    "id": "ph_mentioned_not_eligible",
+    "title": "Regional AI Competition 2026",
+    "text": "Registration is now open for this online AI competition, but residents of Philippines are not eligible. Registration deadline October 5, 2026.",
+    "link": "https://example.com/register",
+    "category": "AI_COMPETITION",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": false
+  },
+  {
+    "id": "venue_inferred_city",
+    "title": "UP Innovation Challenge 2026",
+    "text": "Register now for the innovation challenge at UP Diliman. Open to university students nationwide. Registration deadline October 18, 2026. Event date November 8, 2026.",
+    "link": "https://example.com/register",
+    "category": "INNOVATION_CHALLENGE",
+    "kind": "REGISTRATION_OPEN",
+    "accepted": true
+  },
+  {
+    "id": "deadline_extension",
+    "before": "Registration deadline October 1, 2026.",
+    "after": "Registration deadline extended to October 8, 2026."
+  },
+  {
+    "id": "duplicate_linkedin_official",
+    "urls": ["https://linkedin.com/posts/example", "https://dict.gov.ph/egovph-hackathon-2026"]
+  },
+  {
+    "id": "duplicate_facebook_form_official",
+    "urls": ["https://facebook.com/example", "https://forms.gle/example", "https://ateneo.edu/event"]
+  },
+  {
+    "id": "different_annual_edition",
+    "titles": ["eGovPH Hackathon 2026", "eGovPH Hackathon 2027"]
+  },
+  {
+    "id": "javascript_required",
+    "http": "<div id='app'></div>",
+    "rendered": "Registration is now open for Manila Hackathon 2026."
+  },
+  {
+    "id": "http_failure_browser_success",
+    "http_failure": "JS_REQUIRED",
+    "browser_success": true
+  },
+  {
+    "id": "dead_proxy_healthy_proxy",
+    "proxies": ["dead.example:8080", "healthy.example:8080"]
+  },
+  {
+    "id": "no_proxy_direct_fallback",
+    "proxies": [],
+    "mode": "auto"
+  },
+  {
+    "id": "malformed_proxy_entries",
+    "lines": ["invalid", "[bad](http://bad:1)", "http://ok.example:8080"]
+  },
+  {
+    "id": "international_onsite_only",
+    "location": "Singapore",
+    "location_type": "ONSITE",
+    "philippines_allowed": false
+  },
+  {
+    "id": "search_snippet_official_registration",
+    "snippet": "Registration now open for a Philippine hackathon",
+    "result_url": "https://forms.gle/example",
+    "authority": 20
+  }
+]

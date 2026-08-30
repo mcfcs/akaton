@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+config/profile.yaml
+proxies.txt
+data
+logs
+__pycache__
+.pytest_cache
+
