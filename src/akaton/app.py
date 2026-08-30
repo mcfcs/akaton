@@ -192,9 +192,7 @@ async def _run(config: ConfigBundle) -> None:
         guild_id=config.runtime.discord_guild_id,
         channel_id=config.runtime.discord_channel_id,
     )
-    notifier = DiscordNotifier(
-        bot, config.runtime.discord_channel_id, user_id=config.runtime.discord_user_id
-    )
+    notifier = DiscordNotifier(bot, config.runtime.discord_channel_id)
     _, fetcher, pipeline = _dependencies(config, notifier=notifier, database=database)
     discovery, refresh, maintenance = _monitor_jobs(config, database, pipeline, fetcher)
     bot.run_discovery = discovery.run

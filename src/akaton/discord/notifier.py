@@ -9,12 +9,9 @@ from akaton.persistence.repository import Repository
 
 
 class DiscordNotifier:
-    def __init__(
-        self, client: discord.Client, channel_id: int, *, user_id: int | None = None
-    ) -> None:
+    def __init__(self, client: discord.Client, channel_id: int) -> None:
         self.client = client
         self.channel_id = channel_id
-        self.user_id = user_id
 
     async def send(self, payload: NotificationPayload) -> DeliveryReceipt:
         channel = self.client.get_channel(self.channel_id) or await self.client.fetch_channel(
@@ -47,11 +44,11 @@ class DiscordNotifier:
             name="Relevance", value=payload.relevance_tier.replace("_", " ").title(), inline=True
         )
         embed.set_footer(text=payload.footer_token)
-        content = f"<@{self.user_id}>" if self.user_id else None
+        # Alerts never ping. AllowedMentions.none() also neutralises any mention that a
+        # scraped title or description happens to contain.
         message = await channel.send(
-            content=content,
             embed=embed,
-            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         return DeliveryReceipt(message_id=str(message.id))
 

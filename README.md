@@ -55,7 +55,7 @@ SEARCH_PROVIDER=searxng
 SEARXNG_BASE_URL=http://127.0.0.1:8888
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://100.102.10.69:11434
-OLLAMA_MODEL=qwen3.5:27b
+OLLAMA_MODEL=qwen2.5vl:7b
 DASHBOARD_HOST=100.70.66.3
 DASHBOARD_PORT=8765
 NOTIFICATIONS_ENABLED=false
@@ -138,22 +138,42 @@ suffixes, which only Philippine government agencies and accredited schools can h
 event is rejected for `LOW_AUTHORITY`, adding its domain there is the intended fix.
 
 The default LLM fallback is the Ollama service at `100.102.10.69`, using the installed
-`qwen3.5:27b` model. Akaton invokes it only when deterministic extraction is ambiguous. Set
+`qwen2.5vl:7b` model. Akaton invokes it only when deterministic extraction is ambiguous. Set
 `LLM_PROVIDER=disabled` to use deterministic extraction exclusively.
 
-The LLM dominates cycle time. On the configured server one `qwen3.5:27b` extraction takes about
-53 seconds, so the LLM is the throughput limit rather than the network. `discovery_concurrency`
-does not relieve it, because Ollama serialises requests per model: issuing several at once only
-queues them on the server until the client times out. `llm_concurrency` in `config/settings.yaml`
-therefore defaults to 1, and extractions are admitted one at a time while fetching stays parallel.
+### What the LLM is for, and whether you need it
 
-Use `LLM_PROVIDER=disabled` for fast pipeline runs and configuration testing, and leave it enabled
-for scheduled discovery, where a long cycle inside a 6-hour interval is acceptable. Lower
-`discovery_queries_per_run` if a cycle does not finish before the next one starts.
+Deterministic extraction handles a page with regexes and keyword lists. `should_use_llm` sends a
+page to the model only when that result is thin: overall confidence below 0.75, or a missing
+title, date, or category. The model is a fallback for messy pages, not the primary reader, and
+most pages never reach it. It is also the throughput limit, because Ollama serialises requests per
+model, so `llm_concurrency` defaults to 1 while fetching stays parallel.
 
-Extractions whose evidence quotes do not appear verbatim in the fetched source are rejected by
-`validate_llm_evidence`, and the candidate falls back to the deterministic result. That is working
-as intended, but it is not rare: in a 16-query run, 12 of 49 extractions were discarded this way. OpenAI remains an optional
+Measured against the 15 classification fixtures in `tests/fixtures/events.json`:
+
+| model | per document | usable | category | document kind |
+| --- | --- | --- | --- | --- |
+| deterministic, no LLM | instant | 15/15 | 15/15 | 15/15 |
+| `qwen2.5vl:7b` (default) | 14.0s | 15/15 | 14/15 | 5/15 |
+| `dolphin3:8b` | 12.0s | 15/15 | 12/15 | 6/15 |
+| `llama3:8b` | 8.1s | 15/15 | 10/15 | 3/15 |
+| `qwen3.5:27b` | 105.5s | 10/15 | 8/15 | 8/15 |
+
+`qwen2.5vl:7b` replaced `qwen3.5:27b` as the default: it is roughly seven times faster and more
+accurate on category, and none of its extractions were discarded by `validate_llm_evidence`,
+against 5 of 15 for the 27B model. `llama3:8b` is faster still but returned a confidence below
+0.75 on 12 of 15 documents, which the verifier rejects outright, so it is not a usable swap.
+
+Read that table with its bias in mind: these fixtures were written for the deterministic
+extractor, so they favour it, and they contain none of the awkward real-world pages the LLM
+exists to rescue. What they do show is that no model here reads `document_kind` reliably, and that
+a 27B model is not buying accuracy for its cost.
+
+`LLM_PROVIDER=disabled` is a supported configuration and makes runs dramatically faster. Discovery
+still works: the ImaGnation page, for instance, extracts at 0.83 confidence deterministically and
+never calls the model. Disabling it costs recall only on pages the regexes cannot read, which are
+rejected as `LOW_CONFIDENCE` instead. Start with it disabled if you want fast cycles, and turn it
+on if `LOW_CONFIDENCE` dominates your rejection counts. OpenAI remains an optional
 fallback and is used only when `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are all
 configured. Source text is treated as untrusted data, typed output is required, and claimed
 evidence must occur in the fetched source.

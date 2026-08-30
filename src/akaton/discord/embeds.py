@@ -1,10 +1,56 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from akaton.domain.models import EventFacts, NotificationPayload, ScoringResult
 from akaton.persistence.models import EventChangeRow
+
+SUMMARY_TERMS = (
+    "hackathon",
+    "competition",
+    "challenge",
+    "ideathon",
+    "datathon",
+    "registration",
+    "register",
+    "apply",
+    "deadline",
+    "students",
+    "teams",
+    "prize",
+    "innovation",
+)
+
+
+def _is_prose(sentence: str) -> bool:
+    """Reject nav crumbs and countdown widgets such as "00 days hrs mins secs"."""
+    if len(sentence) < 40:
+        return False
+    letters = sum(character.isalpha() or character.isspace() for character in sentence)
+    return letters >= 0.75 * len(sentence)
+
+
+def summarise(text: str | None, limit: int = 600) -> str:
+    """Pick the sentences that describe the competition.
+
+    Page text starts with menus, cookie notices and countdown timers, so quoting it from
+    the top puts boilerplate in the alert where the description should be.
+    """
+    if not text:
+        return ""
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", text)]
+    prose = [sentence for sentence in sentences if _is_prose(sentence)]
+    relevant = [
+        sentence for sentence in prose if any(term in sentence.casefold() for term in SUMMARY_TERMS)
+    ]
+    summary = ""
+    for sentence in relevant or prose:
+        if len(summary) + len(sentence) + 1 > limit:
+            break
+        summary = f"{summary} {sentence}".strip()
+    return summary
 
 
 def _format_date(value: datetime | None) -> str:
@@ -45,7 +91,7 @@ def build_new_event_payload(
         event_id=event_id,
         event_version=event_version,
         title=facts.title or "Untitled competition",
-        description=(facts.description or "")[:1000],
+        description=summarise(facts.description),
         fields=fields,
         official_url=facts.canonical_url,
         registration_url=facts.registration_url,
