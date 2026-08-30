@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,7 @@ from akaton.domain.models import (
     CandidateSeed,
     DocumentContext,
     EventFacts,
+    FetchResult,
     NotificationPayload,
 )
 from akaton.fetch.manager import FetchManager
@@ -102,7 +104,10 @@ class CandidatePipeline:
             etag = previous.etag if previous else None
             last_modified = previous.last_modified if previous else None
 
-        fetch = await self.fetcher.fetch(str(seed.url), etag=etag, last_modified=last_modified)
+        if seed.content:
+            fetch = _prefetched_result(seed)
+        else:
+            fetch = await self.fetcher.fetch(str(seed.url), etag=etag, last_modified=last_modified)
         async with self.database.session() as session:
             repo = Repository(session)
             candidate = await session.get(CandidateRow, candidate_id)
@@ -398,6 +403,26 @@ class CandidatePipeline:
             if candidate:
                 await repo.transition_candidate(candidate, CandidateState.NOTIFIED)
         return PipelineOutcome(candidate_id, CandidateState.NOTIFIED.value, payload.event_id)
+
+
+def _prefetched_result(seed: CandidateSeed) -> FetchResult:
+    """Wrap content an adapter already collected so it enters the pipeline unchanged.
+
+    Every later stage still applies: the same extraction, the same verification gates and
+    the same scoring. Only the network request is skipped.
+    """
+    text = seed.content or ""
+    return FetchResult(
+        requested_url=str(seed.url),
+        final_url=str(seed.url),
+        fetch_method="prefetched",
+        status_code=200,
+        content_type="text/plain",
+        title=seed.title,
+        text=text,
+        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        usable=bool(text.strip()),
+    )
 
 
 def _as_aware(value: datetime) -> datetime:

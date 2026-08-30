@@ -5,7 +5,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 
 @dataclass(frozen=True)
@@ -63,12 +63,30 @@ class ProxyState:
         return not self.disabled_reason and (not self.cooldown_until or self.cooldown_until <= now)
 
 
+def _rewrite_colon_credentials(value: str) -> str:
+    """Accept the HOST:PORT:USERNAME:PASSWORD form that most proxy vendors hand out.
+
+    It is unambiguous because a bare host:port has two fields and a credentialed URI
+    carries an `@`, so only this layout has four colon-separated fields with a numeric
+    second field. Credentials are percent-encoded so urlsplit reads them intact.
+    """
+    fields = value.split(":")
+    if len(fields) == 4 and fields[1].isdigit():
+        host, port, username, password = fields
+        user = quote(username, safe="")
+        secret = quote(password, safe="")
+        return f"{user}:{secret}@{host}:{port}"
+    return value
+
+
 def parse_proxy(line: str) -> ProxyConfig:
     value = line.strip()
     if not value or value.startswith("#"):
         raise ValueError("blank or comment")
     if "](" in value or value.startswith("["):
         raise ValueError("Markdown links are not supported; use the raw proxy URI")
+    if "://" not in value and "@" not in value:
+        value = _rewrite_colon_credentials(value)
     if "://" not in value:
         value = f"http://{value}"
     parts = urlsplit(value)

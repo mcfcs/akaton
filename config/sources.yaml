@@ -119,4 +119,26 @@ structured_sources:
   kaggle:
     enabled: false
     cadence_hours: 24
+  # Reddit through a real Chrome session, ported from uyam's shreddit collector.
+  # Akaton's HTTP fetcher cannot read Reddit: a permalink returns a JavaScript shell to a
+  # logged-out client and old.reddit redirects to a login. Requires the browser extra
+  # (`pip install -e ".[browser]"`), Google Chrome, and a desktop session, because a
+  # headed window is both harder to block and the only place a challenge can be solved.
+  # Disabled by default: enable it once those are in place.
+  reddit:
+    enabled: true
+    cadence_hours: 12
+    max_age_days: 90
+    # Headless Chrome is redirected to a js_challenge and blocked; a headed window is
+    # not, so this needs a desktop session and opens a visible browser while it runs.
+    headless: false
+    # Seconds to hold a visible challenge open for a person to solve. Leave at 0 for an
+    # unattended monitor: it then rotates proxy and moves on instead of stalling.
+    challenge_wait_seconds: 0
+    profile_dir: data/.browser-profile
+    subreddits: [Philippines, ProgrammerPH, studentsph, PHCareers]
+    terms: ["hackathon", "case competition", "ideathon", "datathon"]
+    # Each term costs one search plus up to this many post pages, so the whole run is
+    # bounded at subreddits x terms x (1 + max_posts_per_term) page loads.
+    max_posts_per_term: 5
 

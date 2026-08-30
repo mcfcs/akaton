@@ -3,41 +3,83 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+import httpx
+
 from akaton.domain.models import CandidateSeed
+from akaton.fetch.http import DEFAULT_HEADERS
 from akaton.fetch.manager import FetchManager
 
 
 class DevpostAdapter:
-    name = "devpost"
-    listing_url = "https://devpost.com/hackathons?status=open"
+    """Devpost's JSON API, asked for Philippine and online hackathons specifically.
 
-    def __init__(self, fetcher: FetchManager) -> None:
+    The listing page it used to scrape was `/hackathons?status=open`, which is every
+    open hackathon on the site regardless of country, so a run mostly produced events
+    the profile could never enter. These queries ask for the two things that are
+    relevant: hackathons that name the Philippines, and online ones that a Filipino
+    participant can join from anywhere.
+    """
+
+    name = "devpost"
+    endpoint = "https://devpost.com/api/hackathons"
+    queries: tuple[dict[str, str], ...] = (
+        {"search": "philippines"},
+        {"search": "manila"},
+        {"challenge_type[]": "online"},
+    )
+
+    def __init__(self, fetcher: FetchManager, *, client: httpx.AsyncClient | None = None) -> None:
         self.fetcher = fetcher
+        self.client = client
 
     async def discover(
         self, since: datetime | None = None, cursor: str | None = None
     ) -> list[CandidateSeed]:
-        result = await self.fetcher.fetch(self.listing_url)
-        if not result.usable:
-            return []
+        own_client = self.client is None
+        client = self.client or httpx.AsyncClient(timeout=30, headers=DEFAULT_HEADERS)
         seeds: list[CandidateSeed] = []
-        for link in result.links:
-            if ".devpost.com" not in link or any(
-                part in link for part in ("/software", "/updates", "/participants")
-            ):
-                continue
-            try:
-                seeds.append(
-                    CandidateSeed(
-                        url=link,
-                        discovery_channel="structured",
-                        provider=self.name,
-                        source_key=link,
-                    )
-                )
-            except ValueError:
-                continue
+        try:
+            for query in self.queries:
+                params = {"status[]": "open", **query}
+                try:
+                    response = await client.get(self.endpoint, params=params)
+                    response.raise_for_status()
+                    payload = response.json()
+                except (httpx.HTTPError, ValueError):
+                    continue
+                for item in payload.get("hackathons", []):
+                    seed = _devpost_seed(item, self.name)
+                    if seed:
+                        seeds.append(seed)
+        finally:
+            if own_client:
+                await client.aclose()
         return list({str(seed.url): seed for seed in seeds}.values())
+
+
+def _devpost_seed(item: dict, provider: str) -> CandidateSeed | None:
+    url = item.get("url")
+    if not url or item.get("open_state") != "open":
+        return None
+    location = (item.get("displayed_location") or {}).get("location")
+    detail = [
+        f"Location: {location}" if location else None,
+        f"Submission period: {item['submission_period_dates']}"
+        if item.get("submission_period_dates")
+        else None,
+        f"Organizer: {item['organization_name']}" if item.get("organization_name") else None,
+    ]
+    try:
+        return CandidateSeed(
+            url=url,
+            title=item.get("title"),
+            snippet="; ".join(part for part in detail if part) or None,
+            discovery_channel="structured",
+            provider=provider,
+            source_key=str(item.get("id") or url),
+        )
+    except ValueError:
+        return None
 
 
 class KaggleAdapter:

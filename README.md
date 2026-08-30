@@ -131,6 +131,65 @@ start a second run while its previous one is still going.
 To add an organizer, add an entry to `config/sources.yaml`; the configured templates automatically
 produce targeted searches. To add or disable a query, edit YAML rather than application code.
 
+### Where candidates come from
+
+| Source | What it covers | Limitation |
+| --- | --- | --- |
+| Rotating web queries | Organiser sites, news, aggregators | Depends on SearXNG's upstream engines |
+| Organizer `site:` queries | One per listed organizer domain | Only finds organizers you have listed |
+| Devpost API | Open hackathons naming the Philippines or Manila, plus open online ones | Few PH-located events are ever open there |
+| Reddit, via uyam | Philippine subreddits | Needs uyam's collector to have run |
+
+Devpost is queried through `https://devpost.com/api/hackathons` with `status[]=open` plus a
+Philippines, Manila, or online filter. It previously scraped `/hackathons?status=open`, which is
+every open hackathon on the site regardless of country, so most of what it produced was
+unenterable. Note that Devpost currently lists no *open* Philippine hackathon at all: all 18 that
+match "philippines" have ended, so the online query is what actually contributes.
+
+Facebook is where a great many Philippine competitions are announced, and Akaton cannot read it.
+Facebook, Instagram and LinkedIn serve a JavaScript shell to a logged-out client, and Akaton does
+not log in, so those results are rejected as `SEARCH_SNIPPET_ONLY`. Search snippets still surface
+such posts, and the organizer behind one can be added to `config/sources.yaml` so its own site is
+queried directly from then on. That is the practical route from a Facebook post to a monitored
+source.
+
+### Reddit
+
+Reddit is readable by neither Akaton's fetcher nor a plain HTTP client: a permalink returns a
+JavaScript shell, `old.reddit.com` redirects to a login, and the unauthenticated `.json`
+endpoints answer 403. `src/akaton/discovery/shreddit.py` and `shreddit_parse.py` are ported from
+the sibling uyam project's shreddit collector and drive a real Chrome window instead.
+
+Requires the browser extra, Google Chrome, and a desktop session:
+
+```powershell
+python -m pip install -e ".[browser]"
+```
+
+How a run goes, and why:
+
+1. Headed Chrome through Patchright, which patches Playwright's automation fingerprints. A
+   headless window is redirected to a `js_challenge` and answered with "you've been blocked by
+   network security"; a headed one is not. This is why the job needs a desktop session.
+2. A proxy per session from `proxies.txt`, with the browser relaunched on another IP when Reddit
+   blocks the current one.
+3. A persistent profile under `data/.browser-profile`, so a solved challenge survives relaunches.
+4. Per subreddit and term, the search page is opened and its result permalinks collected. Search
+   results are *not* `<shreddit-post>` elements, so their attributes cannot be read directly.
+5. Each permalink is then opened, where the post does render as `<shreddit-post>`, and the title
+   and body are read from its attributes. A comments page also renders recommended posts, so the
+   element matching the permalink's own id is the one taken.
+
+Captchas are never auto-solved. With `challenge_wait_seconds: 0` a challenged run rotates and
+moves on, so an unattended monitor finds nothing rather than hanging; raise it if you intend to
+sit and solve one in the window.
+
+A post that links out is followed to that page, which is authoritative. A self-post carries its
+own body on the candidate instead, since there is nothing to fetch. Everything after that is the
+ordinary pipeline, so a Reddit lead still has to clear the same authority and confidence gates as
+any other candidate; a passing mention of a hackathon in an unrelated thread is found by the
+keyword filter and then dropped by them.
+
 The verifier accepts a lone source only at authority 60 or above, and an unlisted site scores 50,
 so it is rejected with `LOW_AUTHORITY`. `platforms` in `config/sources.yaml` admits trusted
 listing sites by domain, and covers subdomains. It seeds the restricted `gov.ph` and `edu.ph`
@@ -293,8 +352,12 @@ responses. It has isolated contexts, resource cleanup, navigation bounds, and no
 ## Proxies
 
 Proxies are optional. Copy `proxies.example.txt` to the ignored `proxies.txt` and use one raw proxy
-per line. Supported forms are `IP:PORT`, `USER:PASS@IP:PORT`, and `http://`, `https://`, or
-`socks5://` URIs. Markdown link syntax is deliberately rejected.
+per line. Supported forms are `IP:PORT`, `HOST:PORT:USERNAME:PASSWORD`, `USER:PASS@IP:PORT`, and
+`http://`, `https://`, or `socks5://` URIs. Markdown link syntax is deliberately rejected.
+
+`HOST:PORT:USERNAME:PASSWORD` is what most vendors hand out and is the same layout uyam expects,
+so one file serves both projects. Any unparseable line aborts startup rather than silently
+shrinking the pool, so a malformed `proxies.txt` will stop `akaton run` from starting at all.
 
 `PROXY_MODE` supports:
 

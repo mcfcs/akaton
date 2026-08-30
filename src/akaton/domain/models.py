@@ -49,6 +49,10 @@ class CandidateSeed(BaseModel):
     source_key: str | None = None
     published_hint: datetime | None = None
     discovered_at: datetime = Field(default_factory=utc_now)
+    # Document text an adapter already holds, for sources whose pages cannot be fetched.
+    # A Reddit permalink serves only a JavaScript shell to a logged-out client, so a
+    # self-post's body has to travel with the seed or it is lost.
+    content: str | None = None
 
 
 class FetchAttempt(BaseModel):

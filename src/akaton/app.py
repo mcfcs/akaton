@@ -17,6 +17,7 @@ from akaton.discord.notifier import DiscordNotifier, reconcile_pending_notificat
 from akaton.discovery.adapters import DevpostAdapter, KaggleAdapter
 from akaton.discovery.brave import BraveSearchProvider
 from akaton.discovery.searxng import SearXNGSearchProvider
+from akaton.discovery.shreddit import DEFAULT_SUBREDDITS, DEFAULT_TERMS, ShredditSource
 from akaton.fetch.browser import PatchrightRenderer
 from akaton.fetch.http import HttpFetcher
 from akaton.fetch.manager import FetchManager
@@ -68,9 +69,26 @@ def _search_provider(config: ConfigBundle):
 
 
 def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
-    adapters = [DevpostAdapter(fetcher)]
-    if config.sources.get("structured_sources", {}).get("kaggle", {}).get("enabled"):
+    structured = config.sources.get("structured_sources", {})
+    adapters = []
+    if structured.get("devpost", {}).get("enabled", True):
+        adapters.append(DevpostAdapter(fetcher))
+    if structured.get("kaggle", {}).get("enabled"):
         adapters.append(KaggleAdapter())
+    reddit = structured.get("reddit", {})
+    if reddit.get("enabled"):
+        adapters.append(
+            ShredditSource(
+                proxies=getattr(fetcher, "proxies", None),
+                profile_dir=config.root / reddit.get("profile_dir", "data/.browser-profile"),
+                subreddits=tuple(reddit.get("subreddits") or DEFAULT_SUBREDDITS),
+                terms=tuple(reddit.get("terms") or DEFAULT_TERMS),
+                headless=bool(reddit.get("headless", False)),
+                max_age_days=int(reddit.get("max_age_days", 90)),
+                challenge_wait_seconds=float(reddit.get("challenge_wait_seconds", 0)),
+                max_posts_per_term=int(reddit.get("max_posts_per_term", 5)),
+            )
+        )
     return adapters
 
 
