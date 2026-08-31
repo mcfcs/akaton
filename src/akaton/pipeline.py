@@ -32,7 +32,8 @@ from akaton.processing.authority import authority_for_url
 from akaton.processing.canonical import choose_urls
 from akaton.processing.dedup import compare_events
 from akaton.processing.deterministic import extract_deterministically
-from akaton.processing.llm import LLMProvider, should_use_llm
+from akaton.processing.llm import LLMProvider, merge_extraction, should_use_llm
+from akaton.processing.relevance import is_plausibly_relevant
 from akaton.processing.scorer import score_event
 from akaton.processing.verifier import verify_event
 
@@ -183,10 +184,17 @@ class CandidatePipeline:
         )
         extraction = extract_deterministically(context, published=seed.published_hint)
         llm_used = False
-        if self.llm and should_use_llm(extraction):
+        # Relevance first, thinness second. `should_use_llm` fires on unknown_category,
+        # so without this an off-topic page is guaranteed a model call while a clean
+        # event page never gets one.
+        if self.llm and is_plausibly_relevant(context) and should_use_llm(extraction):
             try:
                 async with self._llm_limit:
-                    extraction = await self.llm.extract(context)
+                    completion = await self.llm.extract(context)
+                # Merged, not replaced: the model fills gaps and may downgrade a
+                # document kind, but cannot overwrite facts read directly or assert
+                # its own confidence.
+                extraction = merge_extraction(extraction, completion, context)
                 llm_used = True
             except Exception as exc:
                 logger.warning(
@@ -227,7 +235,13 @@ class CandidatePipeline:
                 allow_historical=historical_test,
             )
             if not verification.accepted:
-                reasons = [item.value for item in verification.rejection_codes] or ["AMBIGUOUS"]
+                # Fall back to the gate warnings before the generic bucket, so a
+                # candidate that failed only on unconfirmed registration is countable.
+                reasons = (
+                    [item.value for item in verification.rejection_codes]
+                    or verification.warnings
+                    or ["AMBIGUOUS"]
+                )
                 state = (
                     CandidateState.REJECTED
                     if verification.rejection_codes

@@ -6,7 +6,9 @@ from typing import Protocol
 
 import httpx
 
+from akaton.domain.enums import CompetitionCategory, DocumentKind
 from akaton.domain.models import DocumentContext, ExtractionEnvelope
+from akaton.processing.deterministic import confidence_for
 
 
 class LLMProvider(Protocol):
@@ -122,6 +124,98 @@ def validate_llm_evidence(extraction: ExtractionEnvelope, context: DocumentConte
             not evidence.quote or evidence.quote.casefold() not in corpus
         ):
             raise ValueError(f"unsupported LLM evidence for {evidence.field_name}")
+
+
+# A merged result can clear the verifier's 0.75 gate but never reach the 0.95 reserved
+# for evidence the deterministic extractor read for itself.
+LLM_ASSISTED_CONFIDENCE_CAP = 0.83
+
+# Kinds that stop a candidate. The model may move a document into one of these, never out
+# of one: measured on the repo's own fixtures it reads document_kind correctly 5 times in
+# 15, against 15 in 15 deterministically, and REGISTRATION_OPEN is what unlocks both the
+# registration gate and the actionability score.
+NON_ACTIONABLE_KINDS = {
+    DocumentKind.RESULTS_POST,
+    DocumentKind.WINNER_ANNOUNCEMENT,
+    DocumentKind.PAST_EVENT_RECAP,
+    DocumentKind.NEWS_ARTICLE,
+    DocumentKind.DIRECTORY,
+    DocumentKind.CONFERENCE,
+    DocumentKind.WEBINAR,
+    DocumentKind.JOB_POSTING,
+    DocumentKind.COURSE,
+    DocumentKind.UNRELATED,
+}
+
+# Fields the model is allowed to contribute. Everything else stays deterministic.
+FILLABLE_FIELDS = (
+    "title",
+    "organizer",
+    "registration_url",
+    "prize_information",
+    "team_size_min",
+    "team_size_max",
+)
+
+
+def _supported_fields(extraction: ExtractionEnvelope, context: DocumentContext) -> set[str]:
+    """Field names whose evidence quote actually appears in the source."""
+    corpus = "\n".join(filter(None, (context.title, context.snippet, context.text))).casefold()
+    return {
+        evidence.field_name
+        for evidence in extraction.evidence
+        if evidence.quote and evidence.quote.casefold() in corpus
+    }
+
+
+def merge_extraction(
+    deterministic: ExtractionEnvelope,
+    llm: ExtractionEnvelope,
+    context: DocumentContext,
+) -> ExtractionEnvelope:
+    """Let the model fill gaps without letting it overwrite what was read directly.
+
+    Replacing the envelope wholesale, as this used to, discarded correctly parsed dates
+    and let the model assert its own `overall_confidence` — the number the verifier gates
+    on. Here the deterministic result wins wherever it has one, confidence is recomputed
+    from the merged facts, and a contributed field is kept only if its quote is really in
+    the document.
+    """
+    facts = deterministic.facts.model_copy(deep=True)
+    supported = _supported_fields(llm, context)
+
+    for name in FILLABLE_FIELDS:
+        if getattr(facts, name, None) not in (None, ""):
+            continue
+        value = getattr(llm.facts, name, None)
+        if value in (None, "") or name not in supported:
+            continue
+        setattr(facts, name, value)
+
+    for name in ("registration_deadline", "event_start", "event_end"):
+        current = getattr(facts, name)
+        proposed = getattr(llm.facts, name)
+        if current.value is None and proposed.value is not None and name in supported:
+            setattr(facts, name, proposed)
+
+    if facts.category is CompetitionCategory.UNKNOWN:
+        facts.category = llm.facts.category
+    if facts.location.confidence < 0.7 <= llm.facts.location.confidence:
+        facts.location = llm.facts.location
+    if facts.eligibility.philippines_allowed is None:
+        facts.eligibility = llm.facts.eligibility
+    # Downgrade only.
+    if llm.facts.document_kind in NON_ACTIONABLE_KINDS:
+        facts.document_kind = llm.facts.document_kind
+
+    confidence, ambiguities = confidence_for(facts)
+    return ExtractionEnvelope(
+        facts=facts,
+        evidence=[*deterministic.evidence, *(e for e in llm.evidence if e.field_name in supported)],
+        overall_confidence=min(confidence, LLM_ASSISTED_CONFIDENCE_CAP),
+        ambiguities=ambiguities,
+        extraction_version=f"{deterministic.extraction_version}+llm",
+    )
 
 
 def should_use_llm(extraction: ExtractionEnvelope) -> bool:

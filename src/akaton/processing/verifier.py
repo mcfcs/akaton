@@ -77,7 +77,10 @@ def verify_event(
         if facts.registration_state is RegistrationState.CLOSED or deadline_past:
             rejection.append(RejectionCode.REGISTRATION_CLOSED)
         else:
-            warnings.append("registration state is not confirmed open or forthcoming")
+            # Not provably closed, so this is not a rejection reason on its own — but the
+            # gate still fails, and without a code the candidate disappeared into a
+            # generic AMBIGUOUS bucket. Recorded so the dashboard can count it.
+            warnings.append(RejectionCode.REGISTRATION_UNCONFIRMED.value)
 
     eligibility = facts.eligibility
     online = facts.location.location_type in {LocationType.ONLINE, LocationType.HYBRID}

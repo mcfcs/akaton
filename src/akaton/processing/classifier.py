@@ -29,6 +29,34 @@ CATEGORY_TERMS: list[tuple[CompetitionCategory, tuple[str, ...]]] = [
     (CompetitionCategory.INNOVATION_CHALLENGE, ("innovation challenge", "innovation competition")),
 ]
 
+# Every word that means "this is a competition", including the misspellings and Filipino
+# terms that turn up in group posts. Shared with the Facebook adapter and the relevance
+# gate so the vocabulary is not maintained in three places.
+COMPETITION_TERMS = (
+    "hackathon",
+    "hackaton",
+    "hakaton",
+    "hack-a-thon",
+    "buildathon",
+    "codefest",
+    "code fest",
+    "code league",
+    "datathon",
+    "ideathon",
+    "case competition",
+    "case comp",
+    "business case",
+    "pitch competition",
+    "startup competition",
+    "innovation challenge",
+    "innovation competition",
+    "consulting competition",
+    "coding competition",
+    "programming competition",
+    "kompetisyon",
+    "paligsahan",
+)
+
 RESULT_TERMS = (
     "congratulations to",
     "winner announcement",

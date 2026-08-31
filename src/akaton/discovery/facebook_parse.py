@@ -26,7 +26,13 @@ from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from akaton.domain.models import CandidateSeed
-from akaton.processing.classifier import ACTION_TERMS, RECAP_TERMS, RESULT_TERMS, classify_category
+from akaton.processing.classifier import (
+    ACTION_TERMS,
+    COMPETITION_TERMS,
+    RECAP_TERMS,
+    RESULT_TERMS,
+    classify_category,
+)
 from akaton.processing.links import FORM_HOSTS
 from akaton.processing.locale import detect_country
 from akaton.processing.normalize import fold_text
@@ -84,30 +90,7 @@ POST_ID_RE = re.compile(
 COMMENT_ID_RE = re.compile(r"[?&]comment_id=(\d{5,}|fb_[0-9a-f]{8,})", re.IGNORECASE)
 GROUP_SLUG_RE = re.compile(r"facebook\.com/groups/([^/?#]+)", re.IGNORECASE)
 
-COMPETITION_TERMS = (
-    "hackathon",
-    "hackaton",
-    "hakaton",
-    "hack-a-thon",
-    "buildathon",
-    "codefest",
-    "code fest",
-    "code league",
-    "datathon",
-    "ideathon",
-    "case competition",
-    "case comp",
-    "business case",
-    "pitch competition",
-    "startup competition",
-    "innovation challenge",
-    "innovation competition",
-    "consulting competition",
-    "coding competition",
-    "programming competition",
-    "kompetisyon",
-    "paligsahan",
-)
+# Defined in processing.classifier so the relevance gate shares one vocabulary.
 ACTION_HINTS = ACTION_TERMS + (
     "register",
     "registration",

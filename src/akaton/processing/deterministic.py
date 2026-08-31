@@ -331,6 +331,18 @@ def extract_deterministically(
                     confidence=date.confidence,
                 )
             )
+    confidence, ambiguities = confidence_for(facts)
+    return ExtractionEnvelope(
+        facts=facts, evidence=evidence, overall_confidence=confidence, ambiguities=ambiguities
+    )
+
+
+def confidence_for(facts: EventFacts) -> tuple[float, list[str]]:
+    """Score an extraction from the evidence actually present.
+
+    Kept separate from extraction so a merged LLM result is scored the same way rather
+    than being allowed to assert its own confidence, which the verifier gates on.
+    """
     signals = sum(
         (
             facts.category.value != "UNKNOWN",
@@ -350,6 +362,4 @@ def extract_deterministically(
         ambiguities.append("missing_dates")
     if facts.category.value == "UNKNOWN":
         ambiguities.append("unknown_category")
-    return ExtractionEnvelope(
-        facts=facts, evidence=evidence, overall_confidence=confidence, ambiguities=ambiguities
-    )
+    return confidence, ambiguities

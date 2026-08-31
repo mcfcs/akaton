@@ -143,6 +143,9 @@ class RejectionCode(StrEnum):
     RESULTS_ONLY = "RESULTS_ONLY"
     NO_COMPETITION = "NO_COMPETITION"
     REGISTRATION_CLOSED = "REGISTRATION_CLOSED"
+    # Not provably closed, just never confirmed open. The commonest social-post outcome,
+    # and previously invisible: the gate failed while contributing no code at all.
+    REGISTRATION_UNCONFIRMED = "REGISTRATION_UNCONFIRMED"
     NOT_PHILIPPINES_ELIGIBLE = "NOT_PHILIPPINES_ELIGIBLE"
     INTERNATIONAL_ONSITE = "INTERNATIONAL_ONSITE"
     DUPLICATE = "DUPLICATE"
