@@ -355,20 +355,27 @@ title, date, or category. The model is a fallback for messy pages, not the prima
 most pages never reach it. It is also the throughput limit, because Ollama serialises requests per
 model, so `llm_concurrency` defaults to 1 while fetching stays parallel.
 
-Measured against the 15 classification fixtures in `tests/fixtures/events.json`:
+Measured with `tools/llm_bench.py` against the 26 fixtures in `tests/fixtures/events.json`, of
+which 17 are thin enough to reach a model at all. Each model is warmed before it is timed:
 
-| model | per document | usable | category | document kind |
+| model | s/doc | usable | category | document kind |
 | --- | --- | --- | --- | --- |
-| deterministic, no LLM | instant | 15/15 | 15/15 | 15/15 |
-| `qwen2.5vl:7b` (default) | 14.0s | 15/15 | 14/15 | 5/15 |
-| `dolphin3:8b` | 12.0s | 15/15 | 12/15 | 6/15 |
-| `llama3:8b` | 8.1s | 15/15 | 10/15 | 3/15 |
-| `qwen3.5:27b` | 105.5s | 10/15 | 8/15 | 8/15 |
+| deterministic, no LLM | 0.00 | 15/26 | 15/26 | 15/26 |
+| `Gemma-SEA-LION-v3-9B-IT` (default) | 9.47 | 15/26 | 15/26 | **15/26** |
+| `qwen3:8b` | 9.4 | 15/26 | 15/26 | 14/26 |
+| `dolphin3:8b` | 11.1 | 15/26 | 15/26 | 13/26 |
 
-`qwen2.5vl:7b` replaced `qwen3.5:27b` as the default: it is roughly seven times faster and more
-accurate on category, and none of its extractions were discarded by `validate_llm_evidence`,
-against 5 of 15 for the 27B model. `llama3:8b` is faster still but returned a confidence below
-0.75 on 12 of 15 documents, which the verifier rejects outright, so it is not a usable swap.
+SEA-LION is the default because it is the only candidate that matches deterministic extraction on
+every column rather than regressing one, and because it is trained for Southeast Asian languages
+including Filipino — which these English fixtures cannot show, but the Taglish group posts need.
+
+Benchmarking also found a real defect. `merge_extraction` filled `category`, `location` and
+`eligibility` from the model *without* the evidence check every other contributed field gets, so
+`dolphin3:8b` promoted both the webinar and the job advertisement from `UNKNOWN` to
+`OTHER_COMPETITION` on nothing but its own say-so. Category feeds the verifier's `competition` gate
+and the scorer's +15 for a preferred category, so that is a false alert in the making. With those
+three fields held to the same evidence requirement as the rest, dolphin3's category score went from
+13/26 back to 15/26 — the regression was entirely the missing guard.
 
 Read that table with its bias in mind: these fixtures were written for the deterministic
 extractor, so they favour it, and they contain none of the awkward real-world pages the LLM

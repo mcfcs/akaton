@@ -28,7 +28,11 @@ class RuntimeSettings(BaseSettings):
     # committing one publishes the network layout of whoever set it up; it belongs in
     # .env. `validate_config` reports a missing value when LLM_PROVIDER=ollama.
     ollama_base_url: str = ""
-    ollama_model: str = "dolphin3:8b"
+    # Chosen on measurement, not preference — see tools/llm_bench.py and the README table.
+    # It is the only ~9B candidate that matches deterministic extraction on every column
+    # instead of regressing one, and it is trained for Southeast Asian languages, which
+    # the English-only fixtures cannot show but the Taglish group posts need.
+    ollama_model: str = "aisingapore/Gemma-SEA-LION-v3-9B-IT:q4_k_m"
     # Optional second host, tried when the first answers thinly or cannot be reached.
     # Empty means a single-tier ladder, which is what a one-host deployment wants.
     ollama_escalation_url: str = ""

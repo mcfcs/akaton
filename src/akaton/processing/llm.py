@@ -213,11 +213,17 @@ def merge_extraction(
         if current.value is None and proposed.value is not None and name in supported:
             setattr(facts, name, proposed)
 
-    if facts.category is CompetitionCategory.UNKNOWN:
+    # Category, location and eligibility are gap-fills like the fields above and get the
+    # same evidence requirement. They did not, and it showed: benchmarked against
+    # tests/fixtures/events.json, dolphin3:8b promoted both the webinar and the job
+    # advertisement from UNKNOWN to OTHER_COMPETITION on nothing but its own say-so. That
+    # is the exact input to the verifier's `competition` gate and to the +15 the scorer
+    # gives a preferred category, so an unbacked guess here becomes a false alert.
+    if facts.category is CompetitionCategory.UNKNOWN and "category" in supported:
         facts.category = llm.facts.category
-    if facts.location.confidence < 0.7 <= llm.facts.location.confidence:
+    if facts.location.confidence < 0.7 <= llm.facts.location.confidence and "location" in supported:
         facts.location = llm.facts.location
-    if facts.eligibility.philippines_allowed is None:
+    if facts.eligibility.philippines_allowed is None and "eligibility" in supported:
         facts.eligibility = llm.facts.eligibility
     # Downgrade only.
     if llm.facts.document_kind in NON_ACTIONABLE_KINDS:

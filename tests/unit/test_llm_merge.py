@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from akaton.domain.enums import CompetitionCategory, DocumentKind
-from akaton.domain.models import DateFact, DocumentContext, EventFacts, Evidence, ExtractionEnvelope
+from akaton.domain.models import (
+    DateFact,
+    DocumentContext,
+    EligibilityFact,
+    EventFacts,
+    Evidence,
+    ExtractionEnvelope,
+)
 from akaton.processing.llm import LLM_ASSISTED_CONFIDENCE_CAP, merge_extraction
 from akaton.processing.relevance import is_plausibly_relevant
 
@@ -30,6 +37,34 @@ def _llm(facts: EventFacts, evidence: list[Evidence] | None = None) -> Extractio
     return ExtractionEnvelope(
         facts=facts, evidence=evidence or [], overall_confidence=0.99, ambiguities=[]
     )
+
+
+def test_an_unbacked_category_guess_is_refused():
+    """Benchmarked, dolphin3:8b promoted a webinar and a job ad to OTHER_COMPETITION.
+
+    Category feeds the verifier's `competition` gate and the scorer's +15 for a preferred
+    category, so a guess with no quote behind it turns straight into a false alert. It is
+    a gap-fill like every other contributed field and gets the same evidence requirement.
+    """
+    guess = _llm(EventFacts(category=CompetitionCategory.OTHER_COMPETITION))
+    merged = merge_extraction(_deterministic(category=CompetitionCategory.UNKNOWN), guess, CONTEXT)
+    assert merged.facts.category is CompetitionCategory.UNKNOWN
+
+
+def test_a_category_quoted_from_the_document_is_accepted():
+    backed = _llm(
+        EventFacts(category=CompetitionCategory.HACKATHON),
+        [Evidence(field_name="category", value="HACKATHON", quote="Manila Hackathon 2026")],
+    )
+    merged = merge_extraction(_deterministic(category=CompetitionCategory.UNKNOWN), backed, CONTEXT)
+    assert merged.facts.category is CompetitionCategory.HACKATHON
+
+
+def test_an_unbacked_eligibility_claim_is_refused():
+    """ "Philippines allowed" decides whether an event can alert at all."""
+    guess = _llm(EventFacts(eligibility=EligibilityFact(philippines_allowed=True)))
+    merged = merge_extraction(_deterministic(), guess, CONTEXT)
+    assert merged.facts.eligibility.philippines_allowed is None
 
 
 def test_the_model_cannot_assert_its_own_confidence():

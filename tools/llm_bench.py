@@ -145,11 +145,14 @@ async def main() -> int:
         try:
             row = await _run_model(args.host, model, cases, args.timeout)
         except Exception as exc:
-            print(f"{model:<44} {type(exc).__name__}")
+            print(f"{model:<44} {type(exc).__name__}", flush=True)
             continue
         print(
             f"{row['model']:<44} {row['usable']:>4}/{total:<3} {row['category']:>5}/{total:<3} "
-            f"{row['kind']:>2}/{total:<3} {row['seconds']:>7} {row['failures']:>5}"
+            f"{row['kind']:>2}/{total:<3} {row['seconds']:>7} {row['failures']:>5}",
+            # Each model takes minutes; without this the whole table appears only at the
+            # end, and a model that hangs looks identical to one that is merely slow.
+            flush=True,
         )
     return 0
 
