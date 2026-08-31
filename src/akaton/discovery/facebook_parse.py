@@ -89,6 +89,7 @@ COMPETITION_TERMS = (
     "hackaton",
     "hakaton",
     "hack-a-thon",
+    "buildathon",
     "codefest",
     "code fest",
     "code league",
@@ -584,9 +585,9 @@ def _assemble(
     # than off the post, so a Malaysian announcement came out as country="PH" at 0.75
     # confidence: it cleared the eligibility gate, earned a free confidence signal, and
     # collected 38 scoring points it had not earned.
-    parts = [
-        f"Source: Facebook group post in {post.group}.",
-    ]
+    # The post's own words lead. Attribution goes last: the alert quotes the head of
+    # this document, and a harness preamble there would be the first thing read.
+    parts = []
     if post.author:
         parts.append(f"{post.author}: {post.text}".strip())
     else:
@@ -613,6 +614,7 @@ def _assemble(
     for url in outbound_urls(post.urls):
         if url not in "\n".join(parts):
             parts.append(url)
+    parts.append(f"Source: Facebook group post in {post.group}.")
     return "\n".join(part for part in parts if part).strip()
 
 

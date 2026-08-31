@@ -330,6 +330,11 @@ class CandidatePipeline:
                     extraction.facts,
                     score,
                     extraction.overall_confidence,
+                    discovery_channel=seed.discovery_channel,
+                    source_label=_source_label(seed),
+                    links=list(fetch.links or []),
+                    published=seed.published_hint,
+                    sources=self.config.sources,
                 )
                 change_id = None
             else:
@@ -407,6 +412,15 @@ class CandidatePipeline:
             if candidate:
                 await repo.transition_candidate(candidate, CandidateState.NOTIFIED)
         return PipelineOutcome(candidate_id, CandidateState.NOTIFIED.value, payload.event_id)
+
+
+def _source_label(seed: CandidateSeed) -> str | None:
+    """Name the place an alert came from, so a group post never reads as an official page."""
+    if seed.discovery_channel == "facebook":
+        return f"Facebook group · {seed.query}" if seed.query else "Facebook group post"
+    if seed.discovery_channel == "reddit":
+        return f"Reddit · {seed.query}" if seed.query else "Reddit post"
+    return None
 
 
 def _prefetched_result(seed: CandidateSeed) -> FetchResult:

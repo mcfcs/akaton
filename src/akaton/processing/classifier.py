@@ -11,7 +11,19 @@ CATEGORY_TERMS: list[tuple[CompetitionCategory, tuple[str, ...]]] = [
     ),
     (CompetitionCategory.AI_COMPETITION, ("ai competition", "artificial intelligence challenge")),
     (CompetitionCategory.DATATHON, ("datathon", "data challenge")),
-    (CompetitionCategory.HACKATHON, ("hackathon", "hack-a-thon", "codefest")),
+    (
+        CompetitionCategory.HACKATHON,
+        # "buildathon" and the misspellings turn up constantly in Philippine group posts.
+        (
+            "hackathon",
+            "hack-a-thon",
+            "hackaton",
+            "hakaton",
+            "codefest",
+            "buildathon",
+            "code league",
+        ),
+    ),
     (CompetitionCategory.IDEATHON, ("ideathon", "idea competition")),
     (CompetitionCategory.STARTUP_COMPETITION, ("startup competition", "pitch competition")),
     (CompetitionCategory.INNOVATION_CHALLENGE, ("innovation challenge", "innovation competition")),

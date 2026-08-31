@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import discord
 
+from akaton.discord.embeds import embed_dict
 from akaton.domain.models import DeliveryReceipt, NotificationPayload
 from akaton.persistence.database import Database
 from akaton.persistence.models import NotificationRow
@@ -19,31 +20,9 @@ class DiscordNotifier:
         )
         if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.DMChannel)):
             raise TypeError("Configured Discord destination is not a message channel")
-        color = (
-            discord.Color.red()
-            if payload.relevance_tier == "HIGH_PRIORITY"
-            else discord.Color.green()
-        )
-        embed = discord.Embed(
-            title=payload.title[:256],
-            description=(payload.description or "")[:4096],
-            color=color,
-            url=payload.official_url,
-        )
-        for name, value in payload.fields.items():
-            embed.add_field(name=name[:256], value=value[:1024] or "Not specified", inline=False)
-        links = []
-        if payload.registration_url:
-            links.append(f"[Register]({payload.registration_url})")
-        if payload.official_url:
-            links.append(f"[Official announcement]({payload.official_url})")
-        if links:
-            embed.add_field(name="Links", value=" · ".join(links), inline=False)
-        embed.add_field(name="Confidence", value=payload.confidence_label, inline=True)
-        embed.add_field(
-            name="Relevance", value=payload.relevance_tier.replace("_", " ").title(), inline=True
-        )
-        embed.set_footer(text=payload.footer_token)
+        # Built by discord.embeds.embed_dict so the gateway path and the REST backfill
+        # tool cannot drift apart on escaping or link trust.
+        embed = discord.Embed.from_dict(embed_dict(payload))
         # Alerts never ping. AllowedMentions.none() also neutralises any mention that a
         # scraped title or description happens to contain.
         message = await channel.send(

@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from akaton.config import load_config  # noqa: E402
+from akaton.discord.embeds import embed_dict  # noqa: E402
 from akaton.discovery.facebook import FacebookGroupSource  # noqa: E402
 from akaton.discovery.facebook_parse import mention_kind  # noqa: E402
 from akaton.domain.models import DeliveryReceipt, NotificationPayload  # noqa: E402
@@ -43,40 +44,12 @@ class DiscordRestNotifier:
         self.http = httpx.AsyncClient(timeout=30)
 
     async def send(self, payload: NotificationPayload) -> DeliveryReceipt:
-        color = 0xE74C3C if payload.relevance_tier == "HIGH_PRIORITY" else 0x2ECC71
-        fields = [
-            {"name": name[:256], "value": (value or "Not specified")[:1024], "inline": False}
-            for name, value in payload.fields.items()
-        ]
-        links = []
-        if payload.registration_url:
-            links.append(f"[Register]({payload.registration_url})")
-        if payload.official_url:
-            links.append(f"[Official announcement]({payload.official_url})")
-        if links:
-            fields.append({"name": "Links", "value": " · ".join(links), "inline": False})
-        fields.append({"name": "Confidence", "value": payload.confidence_label, "inline": True})
-        fields.append(
-            {
-                "name": "Relevance",
-                "value": payload.relevance_tier.replace("_", " ").title(),
-                "inline": True,
-            }
-        )
         response = await self.http.post(
             f"https://discord.com/api/v10/channels/{self.channel_id}/messages",
             headers={"Authorization": f"Bot {self.token}", "Content-Type": "application/json"},
             json={
-                "embeds": [
-                    {
-                        "title": payload.title[:256],
-                        "description": (payload.description or "")[:4096],
-                        "url": payload.official_url,
-                        "color": color,
-                        "fields": fields,
-                        "footer": {"text": payload.footer_token},
-                    }
-                ],
+                # Same renderer as the live bot, so escaping and link trust cannot drift.
+                "embeds": [embed_dict(payload)],
                 "allowed_mentions": {"parse": []},
             },
         )

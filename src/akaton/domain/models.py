@@ -202,6 +202,16 @@ class NotificationPayload(BaseModel):
     footer_token: str
     relevance_tier: str
     confidence_label: str
+    # Optional so a NotificationRow written before these existed still validates on the
+    # reconciliation path. dedupe_key is untouched, so no alert is re-sent.
+    source_kind: str = "official"  # "official" | "social_post" | "aggregator"
+    # Decided where the sources config is available and carried with the payload, so a
+    # re-render on the reconciliation path cannot reach a different verdict.
+    official_url_clickable: bool = True
+    source_label: str | None = None
+    source_url: str | None = None
+    links_field: str | None = None
+    evidence_note: str | None = None
 
 
 class DeliveryReceipt(BaseModel):
