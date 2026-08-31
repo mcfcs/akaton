@@ -10,7 +10,7 @@ import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from akaton.config import ConfigBundle, load_config
-from akaton.dashboard.runtime import MonitorController
+from akaton.dashboard.runtime import BotController, MonitorController
 from akaton.dashboard.web import create_dashboard
 from akaton.discord.bot import AkatonBot
 from akaton.discord.notifier import DiscordNotifier, reconcile_pending_notifications
@@ -165,9 +165,14 @@ def _scheduler(
 
 
 def _web_server(
-    config: ConfigBundle, database: Database, controller: MonitorController
+    config: ConfigBundle,
+    database: Database,
+    controller: MonitorController,
+    *,
+    bot: BotController | None = None,
+    notifier=None,
 ) -> uvicorn.Server:
-    application = create_dashboard(database, controller, config)
+    application = create_dashboard(database, controller, config, bot=bot, notifier=notifier)
     server_config = uvicorn.Config(
         application,
         host=config.runtime.dashboard_host,
@@ -224,49 +229,48 @@ async def _run(config: ConfigBundle) -> None:
         raise ValueError("DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID are required to run the bot")
     database = Database(config.runtime.database_url)
     await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
-    bot = AkatonBot(
-        database=database,
-        authorized_user_id=config.runtime.discord_user_id,
-        guild_id=config.runtime.discord_guild_id,
-        channel_id=config.runtime.discord_channel_id,
-    )
-    notifier = DiscordNotifier(bot, config.runtime.discord_channel_id)
+    # The notifier's client is replaced each time the bot is (re)started, because a
+    # discord.py client cannot be reused once closed.
+    notifier = DiscordNotifier(None, config.runtime.discord_channel_id)
     _, fetcher, pipeline = _dependencies(config, notifier=notifier, database=database)
     discovery, refresh, maintenance = _monitor_jobs(config, database, pipeline, fetcher)
-    bot.run_discovery = discovery.run
-    bot.run_backfill = lambda since, queries: discovery.run(
-        since=since,
-        historical_test=True,
-        query_limit=queries,
-    )
-    reconciliation_complete = False
+    reconciled = False
 
-    @bot.event
-    async def on_ready() -> None:
-        nonlocal reconciliation_complete
-        if not reconciliation_complete:
-            await reconcile_pending_notifications(database, notifier)
-            reconciliation_complete = True
+    def build_bot() -> AkatonBot:
+        return AkatonBot(
+            database=database,
+            authorized_user_id=config.runtime.discord_user_id,
+            guild_id=config.runtime.discord_guild_id,
+            channel_id=config.runtime.discord_channel_id,
+        )
 
+    def wire(bot: AkatonBot) -> None:
+        notifier.client = bot
+        bot.run_discovery = discovery.run
+        bot.run_backfill = lambda since, queries: discovery.run(
+            since=since, historical_test=True, query_limit=queries
+        )
+
+        @bot.event
+        async def on_ready() -> None:
+            nonlocal reconciled
+            if not reconciled:
+                await reconcile_pending_notifications(database, notifier)
+                reconciled = True
+
+    bot_controller = BotController(build_bot, config.runtime.discord_bot_token, on_start=wire)
     scheduler = _scheduler(config, discovery, refresh, maintenance)
     scheduler.start(paused=not config.runtime.dashboard_auto_start)
     controller = MonitorController(scheduler, discovery.run, refresh.run)
-    server = _web_server(config, database, controller)
-    bot_task = asyncio.create_task(bot.start(config.runtime.discord_bot_token), name="discord")
-    web_task = asyncio.create_task(server.serve(), name="dashboard")
+    server = _web_server(config, database, controller, bot=bot_controller, notifier=notifier)
+    await bot_controller.start()
     try:
-        done, _ = await asyncio.wait({bot_task, web_task}, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            if error := task.exception():
-                raise error
+        # The dashboard is what keeps the process alive, so stopping the bot from it
+        # does not bring everything else down with it.
+        await server.serve()
     finally:
         server.should_exit = True
-        if not bot.is_closed():
-            await bot.close()
-        for task in (bot_task, web_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(bot_task, web_task, return_exceptions=True)
+        await bot_controller.stop()
         scheduler.shutdown(wait=False)
         await database.close()
 

@@ -9,7 +9,8 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import String, func, select
 
 from akaton.config import ConfigBundle
-from akaton.dashboard.runtime import MonitorController
+from akaton.dashboard.actions import build_manual_payload, record_manual_notification
+from akaton.dashboard.runtime import BotController, MonitorController
 from akaton.persistence.database import Database
 from akaton.persistence.models import (
     CandidateRow,
@@ -20,9 +21,15 @@ from akaton.persistence.models import (
 
 
 def create_dashboard(
-    database: Database, controller: MonitorController, config: ConfigBundle
+    database: Database,
+    controller: MonitorController,
+    config: ConfigBundle,
+    *,
+    bot: BotController | None = None,
+    notifier=None,
 ) -> FastAPI:
     app = FastAPI(title="Akaton Monitor", docs_url=None, redoc_url=None)
+    bot = bot or BotController()
 
     async def authorize(x_akaton_token: Annotated[str | None, Header()] = None) -> None:
         expected = config.runtime.dashboard_token
@@ -68,6 +75,7 @@ def create_dashboard(
             "candidate_states": states,
             "last_search": _search_run(last_search),
             "monitor": controller.status(),
+            "bot": bot.status(),
             "configuration": {
                 "search_provider": config.runtime.search_provider,
                 "llm_provider": config.runtime.llm_provider,
@@ -142,6 +150,59 @@ def create_dashboard(
     async def refresh() -> dict[str, object]:
         accepted = controller.trigger("refresh")
         return {"accepted": accepted, "message": _action_message(accepted, "refresh")}
+
+    @app.post("/api/actions/bot/start", dependencies=secured)
+    async def bot_start() -> dict[str, object]:
+        if not bot.configured:
+            raise HTTPException(status_code=409, detail="Discord is not configured")
+        changed = await bot.start()
+        return {
+            "changed": changed,
+            "state": bot.status()["state"],
+            "message": "Bot starting" if changed else "Bot is already running",
+        }
+
+    @app.post("/api/actions/bot/stop", dependencies=secured)
+    async def bot_stop() -> dict[str, object]:
+        changed = await bot.stop()
+        return {
+            "changed": changed,
+            "state": bot.status()["state"],
+            "message": "Bot stopped" if changed else "Bot was not running",
+        }
+
+    @app.post("/api/actions/events/{event_id}/notify", status_code=202, dependencies=secured)
+    async def notify_event(event_id: int) -> dict[str, object]:
+        """Send an alert for one event on demand.
+
+        Deliberately bypasses the relevance threshold, shadow mode and the
+        already-announced check: those govern automatic delivery, and this is someone
+        looking at a specific event and asking for it.
+        """
+        if notifier is None or not bot.running:
+            raise HTTPException(
+                status_code=409,
+                detail="Discord is not connected. Start the bot first.",
+            )
+        async with database.session() as session:
+            row = await session.get(EventRow, event_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="Event not found")
+            payload = build_manual_payload(row, config)
+            title = row.title
+        try:
+            receipt = await notifier.send(payload)
+        except Exception as exc:
+            async with database.session() as session:
+                session.add(
+                    record_manual_notification(
+                        payload, message_id=None, error=f"{type(exc).__name__}: {exc}"
+                    )
+                )
+            raise HTTPException(status_code=502, detail=f"Discord refused: {exc}") from exc
+        async with database.session() as session:
+            session.add(record_manual_notification(payload, message_id=receipt.message_id))
+        return {"sent": True, "message": f"Sent “{title[:60]}” to Discord"}
 
     @app.post("/api/actions/scheduler/start", dependencies=secured)
     async def scheduler_start() -> dict[str, object]:
@@ -237,6 +298,9 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
       <button data-act="refresh" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Refresh events</button>
       <button data-sched="start" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Start monitor</button>
       <button data-sched="pause" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Pause</button>
+      <span class="mx-1 h-6 w-px bg-edge"></span>
+      <button data-bot="start" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Start bot</button>
+      <button data-bot="stop" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-rose">Stop bot</button>
     </div>
   </header>
 
@@ -252,6 +316,9 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
     <div class="rounded-xl border border-edge bg-panel/90 p-4 shadow-lg shadow-black/20">
       <p class="text-xs text-emerald-200/60">Scheduler</p><p id="k-scheduler" class="mt-1 text-2xl font-extrabold">—</p>
       <p id="k-next" class="mt-1 text-[11px] text-emerald-200/50">—</p></div>
+    <div class="rounded-xl border border-edge bg-panel/90 p-4 shadow-lg shadow-black/20">
+      <p class="text-xs text-emerald-200/60">Discord bot</p><p id="k-bot" class="mt-1 text-2xl font-extrabold">—</p>
+      <p id="k-bot-detail" class="mt-1 text-[11px] text-emerald-200/50">—</p></div>
   </section>
 
   <section class="mt-4 grid gap-4 lg:grid-cols-2">
@@ -273,7 +340,8 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
     <div class="overflow-x-auto"><table class="w-full min-w-[820px] text-sm">
       <thead><tr class="border-b border-edge text-left text-xs uppercase tracking-wide text-emerald-200/50">
         <th class="pb-2 pr-3">Competition</th><th class="pb-2 pr-3">Category</th><th class="pb-2 pr-3">Location</th>
-        <th class="pb-2 pr-3">Deadline</th><th class="pb-2 pr-3">Reg.</th><th class="pb-2 text-right">Score</th></tr></thead>
+        <th class="pb-2 pr-3">Deadline</th><th class="pb-2 pr-3">Reg.</th><th class="pb-2 pr-3 text-right">Score</th>
+        <th class="pb-2 text-right">Alert</th></tr></thead>
       <tbody id="events"></tbody></table></div>
   </section>
 
@@ -331,6 +399,12 @@ document.querySelectorAll('[data-sched]').forEach((b) => b.onclick = async () =>
   try { const d = await api('/api/actions/scheduler/' + b.dataset.sched, {method: 'POST'}); toast('Scheduler ' + d.state); load(); }
   catch (e) { toast(e.message); }
 });
+document.querySelectorAll('[data-bot]').forEach((b) => b.onclick = async () => {
+  b.disabled = true;
+  try { const d = await api('/api/actions/bot/' + b.dataset.bot, {method: 'POST'}); toast(d.message); }
+  catch (e) { toast(e.message); }
+  finally { b.disabled = false; setTimeout(load, 1200); }
+});
 $('clear-filter').onclick = () => { filter = null; load(); };
 
 function renderSearches(rows) {
@@ -355,7 +429,7 @@ function renderEvents(rows) {
   const body = $('events'); body.replaceChildren();
   if (!rows.length) {
     const tr = document.createElement('tr'); const td = cell('No accepted events yet.', 'text-emerald-200/50');
-    td.colSpan = 6; tr.append(td); body.append(tr); return;
+    td.colSpan = 7; tr.append(td); body.append(tr); return;
   }
   for (const e of rows) {
     const tr = document.createElement('tr'); tr.className = 'border-b border-edge/50';
@@ -368,8 +442,26 @@ function renderEvents(rows) {
     rt.append(chip(e.registration || 'UNKNOWN', e.registration === 'OPEN' ? 'bg-emerald-500/15 text-mint' : 'bg-white/5 text-emerald-200/60'));
     tr.append(rt);
     tr.append(cell(e.score, 'text-right font-bold'));
+    tr.append(sendCell(e));
     body.append(tr);
   }
+}
+
+function sendCell(event) {
+  const td = document.createElement('td');
+  td.className = 'py-2 text-right align-top';
+  const button = el('button', 'Send', 'rounded-lg border border-edge bg-panel px-2.5 py-1 text-xs font-semibold hover:border-mint disabled:opacity-40');
+  button.title = 'Post this event to Discord now, ignoring the score threshold';
+  button.onclick = async () => {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = 'Sending…';
+    try { const d = await api('/api/actions/events/' + event.id + '/notify', {method: 'POST'}); toast(d.message); button.textContent = 'Sent'; }
+    catch (e) { toast(e.message); button.textContent = original; button.disabled = false; }
+    finally { setTimeout(load, 1500); }
+  };
+  td.append(button);
+  return td;
 }
 
 function renderReasons(counts) {
@@ -417,6 +509,13 @@ async function load() {
     $('k-notifications').textContent = s.counts.notifications;
     $('k-rejected').textContent = rej.total;
     $('k-scheduler').textContent = s.monitor.scheduler;
+    const bot = s.bot || {state: 'UNKNOWN'};
+    $('k-bot').textContent = bot.state.replaceAll('_', ' ');
+    $('k-bot').className = 'mt-1 text-2xl font-extrabold ' + (bot.state === 'RUNNING' ? 'text-mint'
+      : bot.state === 'STOPPED' ? 'text-amber' : 'text-emerald-200/50');
+    $('k-bot-detail').textContent = bot.last_error ? bot.last_error
+      : bot.user ? 'connected as ' + bot.user
+      : bot.state === 'NOT_CONFIGURED' ? 'no Discord token configured' : 'not connected';
     const next = (s.monitor.jobs || []).map((j) => j.next_run_at).filter(Boolean).sort()[0];
     $('k-next').textContent = next ? 'next ' + new Date(next).toLocaleTimeString() : 'no job scheduled';
     $('subtitle').textContent = s.configuration.search_provider + ' search · ' + s.configuration.llm_provider +
