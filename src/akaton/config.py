@@ -24,8 +24,15 @@ class RuntimeSettings(BaseSettings):
     llm_provider: Literal["ollama", "openai", "disabled"] = "ollama"
     openai_api_key: str | None = None
     openai_model: str | None = None
-    ollama_base_url: str = "http://100.102.10.69:11434"
-    ollama_model: str = "qwen2.5vl:7b"
+    # No default host. This is a private Tailscale address in every real deployment, and
+    # committing one publishes the network layout of whoever set it up; it belongs in
+    # .env. `validate_config` reports a missing value when LLM_PROVIDER=ollama.
+    ollama_base_url: str = ""
+    ollama_model: str = "dolphin3:8b"
+    # Optional second host, tried when the first answers thinly or cannot be reached.
+    # Empty means a single-tier ladder, which is what a one-host deployment wants.
+    ollama_escalation_url: str = ""
+    ollama_escalation_model: str = "qwen2.5vl:7b"
     proxy_mode: str = "auto"
     database_url: str = "sqlite+aiosqlite:///data/akaton.db"
     dashboard_host: str = "127.0.0.1"

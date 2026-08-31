@@ -14,7 +14,12 @@ not to make the accept decision, which `verify_event` still owns.
 from __future__ import annotations
 
 from akaton.domain.models import DocumentContext
-from akaton.processing.classifier import ACTION_TERMS, COMPETITION_TERMS
+from akaton.processing.classifier import (
+    ACTION_TERMS,
+    COMPETITION_TERMS,
+    HEADLINE_RECAP_TERMS,
+    HEADLINE_RESULT_TERMS,
+)
 from akaton.processing.normalize import fold_text
 
 # Words that mean a contest on their own. A page saying "competition" may be thin, but
@@ -37,6 +42,26 @@ WEAK_CONTEST_HINTS = (
     "case study",
     "tilt",
 )
+
+
+def looks_like_old_news(title: str | None, snippet: str | None = None) -> bool:
+    """True when a search result's own headline says the competition already happened.
+
+    Runs before the fetch, on what the engine gave us. A search result title *is* a
+    headline, which is the one place the tense reliably survives — the same finding that
+    `classify_document` is built on. Catching it here saves a fetch, an extraction and
+    possibly a model call on a document that is going to be rejected anyway.
+
+    Deliberately conservative: any call to action anywhere in the title or snippet stands
+    the result down, because a live announcement may well mention last year's winners.
+    """
+    if not title:
+        return False
+    headline = fold_text(title).casefold()
+    context = fold_text("\n".join(filter(None, (title, snippet)))).casefold()
+    if any(term in context for term in ACTION_TERMS):
+        return False
+    return any(term in headline for term in HEADLINE_RESULT_TERMS + HEADLINE_RECAP_TERMS)
 
 
 def is_plausibly_relevant(context: DocumentContext) -> bool:

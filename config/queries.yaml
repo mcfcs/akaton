@@ -1,4 +1,14 @@
 groups:
+  # Removed: '"calling all students" competition Philippines'.
+  #
+  # It was circular. "calling all students" is an entry in ACTION_TERMS, which is exactly
+  # what `classify_document` uses as evidence that a page is a live call for entries, so
+  # searching for the classifier's own signal guaranteed every result would look
+  # actionable whatever its subject. It returned two municipal tourism poster contests,
+  # both of which became alerts.
+  #
+  # The remaining phrase queries are safe because they pair the action phrase with a
+  # competition word, so the subject is constrained as well as the tense.
   hot:
     cadence_hours: 6
     weight: 5
@@ -7,9 +17,12 @@ groups:
       - '"registration now open" hackathon Philippines'
       - '"applications now open" hackathon Philippines'
       - '"register now" "case competition" Philippines'
-      - '"calling all students" competition Philippines'
       - 'ideathon Philippines registration'
-      - 'innovation challenge Philippines registration'
+      # "innovation challenge Philippines registration" on its own matched any innovation
+      # news; it produced three of the eight bad events. Requiring a participation cue
+      # asks for a page addressed to entrants rather than to readers.
+      - '"innovation challenge" Philippines "how to join" OR "how to register"'
+      - '"business case competition" Philippines "call for applications"'
   metro:
     cadence_hours: 12
     weight: 4

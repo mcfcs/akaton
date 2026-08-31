@@ -114,6 +114,42 @@ def is_listing_url(url: str) -> bool:
     return any(key in ("q", "query", "search") for key, _ in parse_qsl(parts.query))
 
 
+NEWS_MARKERS = (
+    "/news/",
+    "/newsroom/",
+    "/press-release/",
+    "/press-releases/",
+    "/article/",
+    "/articles/",
+    "/stories/",
+    "/story/",
+    "/bulletin/",
+    "/announcements/",
+    "/blog/",
+)
+# A dated path segment — /2026/08/27/ or /2026/08/ — is how almost every CMS lays out a
+# news post and almost no CMS lays out a standing event page.
+DATED_PATH_RE = re.compile(r"/20\d{2}/\d{1,2}(/\d{1,2})?/")
+
+
+def is_news_url(url: str | None) -> bool:
+    """True for a URL shaped like a newsroom post rather than an event's own page.
+
+    This is what catches a headline that says nothing. One stored event was titled only
+    "Polytechnic University of the Philippines", from `pup.edu.ph/news/?go=...`; there is
+    no vocabulary that can classify that, but the path is unmistakable. It also catches
+    `wpu.edu.ph/home/2026/08/03/...` and `dmmmsu.edu.ph/2026/08/27/...` on shape alone.
+
+    Deliberately shape-only: an organiser announcing on their own newsroom is common, so
+    the caller lets an explicit registration call to action override this.
+    """
+    if not url:
+        return False
+    parts = urlsplit(url.casefold())
+    path = parts.path if parts.path.endswith("/") else f"{parts.path}/"
+    return any(marker in path for marker in NEWS_MARKERS) or bool(DATED_PATH_RE.search(path))
+
+
 def extract_edition(
     title: str | None,
     *date_years: int | None,

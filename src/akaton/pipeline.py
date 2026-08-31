@@ -33,7 +33,7 @@ from akaton.processing.canonical import choose_urls
 from akaton.processing.dedup import MatchDecision, compare_events
 from akaton.processing.deterministic import extract_deterministically
 from akaton.processing.llm import LLMProvider, merge_extraction, should_use_llm
-from akaton.processing.relevance import is_plausibly_relevant
+from akaton.processing.relevance import is_plausibly_relevant, looks_like_old_news
 from akaton.processing.scorer import score_event
 from akaton.processing.verifier import verify_event
 
@@ -89,6 +89,23 @@ class CandidatePipeline:
                 )
             candidate.retry_at = None
             await repo.transition_candidate(candidate, CandidateState.NORMALIZED)
+            # The search result's own headline can already say the competition is over.
+            # Rejecting here saves a fetch, an extraction and possibly a model call on a
+            # document the verifier would reject anyway. A prefetched seed skips this:
+            # its "title" is the first line of a social post, not a headline.
+            if not seed.content and looks_like_old_news(seed.title, seed.snippet):
+                await repo.transition_candidate(
+                    candidate,
+                    CandidateState.REJECTED,
+                    detail={"reason": "stale_headline", "title": seed.title},
+                    rejection_reasons=[RejectionCode.RESULTS_ONLY.value],
+                )
+                return PipelineOutcome(
+                    candidate.id,
+                    CandidateState.REJECTED.value,
+                    candidate.event_id,
+                    RejectionCode.RESULTS_ONLY.value,
+                )
             if historical_test:
                 await repo.transition_candidate(
                     candidate,
@@ -350,7 +367,14 @@ class CandidatePipeline:
                     event.id,
                     "existing_event",
                 )
-            if is_new and score.total < threshold and not historical_test:
+            # The threshold applies to a backfill too. `historical_test` relaxes the
+            # past-event and registration-deadline gates — that is its documented job —
+            # but it used to skip this check as well, so a backdate notified for every
+            # new event at any score. Three of the eight events the live database had
+            # stored scored 59, 64 and 64 against a threshold of 65 and alerted anyway.
+            # The event is still created, which is what makes a backdate informative;
+            # only the alert is suppressed.
+            if is_new and score.total < threshold:
                 await repo.transition_candidate(
                     candidate,
                     CandidateState.SUPPRESSED,

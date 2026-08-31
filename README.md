@@ -55,9 +55,9 @@ contain personal information. Then edit `.env`:
 SEARCH_PROVIDER=searxng
 SEARXNG_BASE_URL=http://127.0.0.1:8888
 LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://100.102.10.69:11434
-OLLAMA_MODEL=qwen2.5vl:7b
-DASHBOARD_HOST=100.70.66.3
+OLLAMA_BASE_URL=http://ollama.internal:11434
+OLLAMA_MODEL=dolphin3:8b
+DASHBOARD_HOST=100.100.100.100
 DASHBOARD_PORT=8765
 NOTIFICATIONS_ENABLED=false
 ```
@@ -90,8 +90,8 @@ Or start the dashboard and scheduler without Discord:
 akaton dashboard
 ```
 
-On this machine it is available only through Tailscale at
-`http://100.70.66.3:8765`. The port was selected because it was not listening when configured.
+It is available only through Tailscale, at `http://<your-tailscale-ip>:8765`. The port was selected
+because it was not listening when configured.
 
 Keep `NOTIFICATIONS_ENABLED=false` for the first few cycles. Inspect `/status`, `/upcoming`, and
 `/why event_id:<id>` before enabling delivery. Events and decisions are still stored in shadow
@@ -231,9 +231,54 @@ listing sites by domain, and covers subdomains. It seeds the restricted `gov.ph`
 suffixes, which only Philippine government agencies and accredited schools can hold. When a real
 event is rejected for `LOW_AUTHORITY`, adding its domain there is the intended fix.
 
-The default LLM fallback is the Ollama service at `100.102.10.69`, using the installed
-`qwen2.5vl:7b` model. Akaton invokes it only when deterministic extraction is ambiguous. Set
+The LLM fallback is whichever Ollama host `OLLAMA_BASE_URL` names — there is no default in code,
+because in practice it is a private Tailscale address. Akaton invokes it only when deterministic
+extraction is ambiguous. Set
 `LLM_PROVIDER=disabled` to use deterministic extraction exclusively.
+
+### Telling a news article from an event page
+
+A university or agency news article about a competition is mostly *about the competition*: it names
+it, describes it, quotes the organisers. On the body text alone it is indistinguishable from the
+competition's own page. This was not hypothetical — six of the first eight events the live database
+stored were wrong, and all eight had alerted:
+
+| stored title | what it was |
+| --- | --- |
+| "CIT students **secure top spots** in HackForGov 5" | winner announcement |
+| "WPU IDEA Pitch 2026 **Champions** Youth Innovation" | recap |
+| "QCU **Hosts**… **Showcases Excellence**" | recap |
+| "Polytechnic University of the Philippines" | a `/news/?go=…` listing page |
+| two municipal tourism poster contests | real, but not a hackathon or case competition |
+
+Three independent causes, each fixed:
+
+**The tense lives in the headline.** `classify_document` now takes the title and URL, and applies a
+much broader result and recap vocabulary to the *headline* than it dares apply to the body — because
+a body-level rule cannot distinguish "cash prizes await the winning teams" in a live announcement
+from a report of who won. The headline decides before the body is consulted, so a news article that
+quotes the original call for entries no longer talks the classifier out of what its own headline
+says. `tests/fixtures/news_vs_events.json` is the real page text of all eight, plus six documents
+that were already being rejected correctly, as a guard against over-correcting.
+
+**Some headlines say nothing.** "Polytechnic University of the Philippines" is unclassifiable, but
+`pup.edu.ph/news/?go=…` is not. `is_news_url` treats a `/news/`, `/press-release/` or `/article/`
+segment, or a `/YYYY/MM/DD/` date path, as a newsroom post. An explicit registration call in the
+headline overrides it, so an organiser announcing on their own newsroom still passes.
+
+**A backdate used to lower the bar.** `historical_test` relaxes the past-event and deadline gates —
+that is its job — but it also skipped the notification threshold, so a backdate alerted for every new
+event at any score. The three below-threshold events above (59, 64, 64 against 65) would never have
+alerted from a scheduled run. The event is still created; only the alert is suppressed.
+
+A search result's own headline is checked *before* the fetch too, so a recap costs no fetch,
+no extraction and no model call.
+
+One query was also removed as structurally unsound: `"calling all students" competition Philippines`
+searched for a phrase that is itself an entry in `ACTION_TERMS`, which is what the classifier uses as
+evidence that a page is a live call for entries. Searching for the classifier's own signal
+guaranteed every result would look actionable whatever its subject; it returned both tourism
+contests.
 
 ### Mentions: when a post names a competition without linking to it
 
@@ -379,8 +424,8 @@ through Discord's Gateway connection.
 
 ## Running without paid APIs
 
-The software path can be zero-cost: SQLite, deterministic parsing, the Ollama server at
-`100.102.10.69`, a private SearXNG instance, and the dashboard are all self-hosted. This excludes
+The software path can be zero-cost: SQLite, deterministic parsing, a self-hosted Ollama server, a
+private SearXNG instance, and the dashboard are all self-hosted. This excludes
 electricity, hardware, and internet service. SearXNG does not own a search index; it queries
 configured upstream engines, so those engines can throttle it or return fewer results.
 
@@ -419,8 +464,8 @@ docker compose -f compose.free.yaml up --build -d
 This starts:
 
 - private SearXNG on `127.0.0.1:8888`;
-- Akaton's dashboard and scheduler on `100.70.66.3:8765`;
-- the existing Ollama model over Tailscale at `100.102.10.69:11434`.
+- Akaton's dashboard and scheduler on your Tailscale address, port 8765;
+- an existing Ollama model over Tailscale, port 11434.
 
 For native Python development, start only SearXNG and run the dashboard locally:
 

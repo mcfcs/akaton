@@ -41,7 +41,7 @@ async def test_ollama_provider_uses_local_structured_output():
 
     def handle(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
-        assert str(request.url) == "http://100.102.10.69:11434/api/chat"
+        assert str(request.url) == "http://ollama.internal:11434/api/chat"
         assert payload["model"] == "qwen3.5:27b"
         assert payload["stream"] is False
         assert payload["think"] is False
@@ -52,6 +52,6 @@ async def test_ollama_provider_uses_local_structured_output():
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        provider = OllamaLLMProvider("http://100.102.10.69:11434", "qwen3.5:27b", client=client)
+        provider = OllamaLLMProvider("http://ollama.internal:11434", "qwen3.5:27b", client=client)
         result = await provider.extract(context)
     assert result.facts.title == "Manila Hackathon 2026"

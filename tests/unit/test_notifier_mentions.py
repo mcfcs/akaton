@@ -12,7 +12,7 @@ PAYLOAD = NotificationPayload(
     event_version=1,
     title="ImaGnation 2026",
     # A scraped page can carry a mention of its own; it must not become a ping.
-    description="Run by @everyone at <@317960919978213377> in Taguig.",
+    description="Run by @everyone at <@123456789012345678> in Taguig.",
     fields={"Category": "BUSINESS_CASE"},
     official_url="https://gcash.com/imagnation",
     registration_url="https://gcash.com/imagnation",

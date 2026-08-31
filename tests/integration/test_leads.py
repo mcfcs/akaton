@@ -161,6 +161,33 @@ class TestRanking:
         results = [seed("https://dict.gov.ph/events/?search=hackathon", "All events")]
         assert rank_results(results, SOURCES, "Hack4Gov") == []
 
+    def test_a_newsroom_post_about_the_competition_is_not_the_competition(self):
+        """Live, this is what "Hack4Gov Philippines" actually returns first."""
+        results = [
+            seed(
+                "https://pia.gov.ph/news/dict-launches-hack4gov-in-basilan",
+                "DICT launches Hack4Gov in Basilan",
+            )
+        ]
+        assert rank_results(results, SOURCES, "Hack4Gov") == []
+
+    def test_a_stale_headline_is_dropped_even_on_a_trusted_host(self):
+        results = [
+            seed(
+                "https://dict.gov.ph/hack4gov-2025",
+                "CIT students secure top spots in Hack4Gov 5",
+            )
+        ]
+        assert rank_results(results, SOURCES, "Hack4Gov") == []
+
+    def test_a_registration_page_beats_an_equally_authoritative_one(self):
+        results = [
+            seed("https://dict.gov.ph/hack4gov-about", "Hack4Gov overview"),
+            seed("https://dict.gov.ph/hack4gov/register", "Hack4Gov registration"),
+        ]
+        ranked = rank_results(results, SOURCES, "Hack4Gov")
+        assert str(ranked[0][1].url) == "https://dict.gov.ph/hack4gov/register"
+
 
 class StubProvider:
     name = "searxng"

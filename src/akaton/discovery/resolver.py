@@ -31,7 +31,8 @@ from akaton.domain.models import CandidateSeed, LeadRef, MentionLead
 from akaton.processing.authority import authority_for_url
 from akaton.processing.links import host_of
 from akaton.processing.mentions import HEAD_WORDS
-from akaton.processing.normalize import is_listing_url
+from akaton.processing.normalize import is_listing_url, is_news_url, is_registration_url
+from akaton.processing.relevance import looks_like_old_news
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,13 @@ def rank_results(
         # extracting a single event from it invents one out of unrelated fragments.
         if is_listing_url(url):
             continue
+        # A newsroom post about a competition is not the competition. Ranking on
+        # authority alone resolved "Hack4Gov Philippines" to
+        # pia.gov.ph/news/dict-launches-hack4gov-… — a government news agency, so
+        # authority 85, and an article rather than a page anyone can register on. The
+        # classifier would reject it after a fetch; dropping it here costs nothing.
+        if is_news_url(url) or looks_like_old_news(seed.title, seed.snippet):
+            continue
         authority = authority_for_url(url, sources)
         if authority < MIN_RESOLVE_AUTHORITY:
             continue
@@ -103,11 +111,14 @@ def rank_results(
         overlap = _name_overlap(seed, tokens)
         if tokens and not overlap:
             continue
-        ranked.append(((overlap, authority), len(ranked), seed))
-    # Overlap first, then authority, then the order the engines returned them — the only
-    # other signal available, and a reasonable tiebreak among equally good hosts.
-    ranked.sort(key=lambda item: (item[0][0], item[0][1], -item[1]), reverse=True)
-    return [(score[1], seed) for score, _, seed in ranked]
+        # A page you can register on beats an equally authoritative page you cannot.
+        registrable = 1 if is_registration_url(url) else 0
+        ranked.append(((overlap, registrable, authority), len(ranked), seed))
+    # Name overlap first, then whether it is a registration page, then authority, then the
+    # order the engines returned them — the only other signal available, and a reasonable
+    # tiebreak among equally good hosts.
+    ranked.sort(key=lambda item: (*item[0], -item[1]), reverse=True)
+    return [(score[2], seed) for score, _, seed in ranked]
 
 
 class LeadResolver:

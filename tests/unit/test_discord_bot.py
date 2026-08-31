@@ -67,4 +67,4 @@ def test_only_the_configured_user_is_authorized(bot):
 
     assert bot.allowed(Interaction(42)) is True
     # The bot's own application ID is a common misconfiguration and must not pass.
-    assert bot.allowed(Interaction(1543604617600827392)) is False
+    assert bot.allowed(Interaction(987654321098765432)) is False

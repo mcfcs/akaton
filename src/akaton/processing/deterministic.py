@@ -281,7 +281,13 @@ def extract_deterministically(
         (normalize_url(url) for url in context.links if is_registration_url(url)), None
     )
     category = classify_category(combined)
-    kind = DocumentKind.DIRECTORY if is_listing_url(context.url) else classify_document(combined)
+    kind = (
+        DocumentKind.DIRECTORY
+        if is_listing_url(context.url)
+        # The title and URL are what let the classifier see a newsroom post; without them
+        # a news article about a competition is indistinguishable from the competition.
+        else classify_document(combined, title=title, url=context.url)
+    )
     facts = EventFacts(
         title=title,
         normalized_title=normalize_title(title),
