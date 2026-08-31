@@ -102,8 +102,11 @@ def _thread_report(posts) -> list[dict]:
         comments = [
             {
                 "kind": mention_kind(comment.text, comment.urls),
-                "text": comment.text[:400],
-                "urls": comment.urls[:8],
+                # Full text, not a preview: tools/facebook_replay.py re-classifies this
+                # dump, and truncating drops the dates and calls to action that decide
+                # the kind, which made replayed counts disagree with the live run.
+                "text": comment.text,
+                "urls": comment.urls,
                 "author": comment.author,
             }
             for comment in post.comments
@@ -113,8 +116,8 @@ def _thread_report(posts) -> list[dict]:
                 "post_id": post.post_id,
                 "permalink": post.permalink,
                 "kind": mention_kind(post.text, post.urls),
-                "text": post.text[:500],
-                "urls": post.urls[:8],
+                "text": post.text,
+                "urls": post.urls,
                 "created_at": post.created_at.isoformat() if post.created_at else None,
                 "comment_count": len(post.comments),
                 "comments": comments,

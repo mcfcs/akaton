@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from akaton.domain.enums import CompetitionCategory, DocumentKind
+from akaton.processing.normalize import fold_text
 
 CATEGORY_TERMS: list[tuple[CompetitionCategory, tuple[str, ...]]] = [
     (CompetitionCategory.BUSINESS_CASE, ("business case competition", "case competition")),
@@ -44,7 +45,7 @@ ACTION_TERMS = (
 
 
 def classify_category(text: str) -> CompetitionCategory:
-    lowered = text.casefold()
+    lowered = fold_text(text).casefold()
     for category, terms in CATEGORY_TERMS:
         if any(term in lowered for term in terms):
             return category
@@ -54,7 +55,7 @@ def classify_category(text: str) -> CompetitionCategory:
 
 
 def classify_document(text: str) -> DocumentKind:
-    lowered = text.casefold()
+    lowered = fold_text(text).casefold()
     if any(term in lowered for term in RESULT_TERMS):
         return DocumentKind.WINNER_ANNOUNCEMENT
     if any(term in lowered for term in RECAP_TERMS):

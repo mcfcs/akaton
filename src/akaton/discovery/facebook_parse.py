@@ -27,7 +27,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 from akaton.domain.models import CandidateSeed
 from akaton.processing.classifier import ACTION_TERMS, RECAP_TERMS, RESULT_TERMS, classify_category
-from akaton.processing.normalize import is_registration_url
+from akaton.processing.normalize import fold_text, is_registration_url
 
 FACEBOOK_HOSTS = {
     "facebook.com",
@@ -156,6 +156,30 @@ JOB_HINTS = (
     "apply for this role",
     "internship opening",
 )
+# Meta's own account and security notices render into `[role="article"]` elements that
+# look exactly like comments to the DOM scraper. A real run captured "You're now using a
+# Meta Account on Facebook." and "We noticed a new login from a device or location you
+# don't usually use" as replies, dragging accountscenter.facebook.com links in with them.
+PLATFORM_CHROME_MARKERS = (
+    "meta account",
+    "meta accounts are coming",
+    "you're now using a meta account",
+    "we noticed a new login",
+    "a device or location you don't usually use",
+    "review recent login",
+    "was this you",
+    "your account has been",
+    "log in to continue",
+    "see new posts",
+)
+
+
+def is_platform_chrome(text: str) -> bool:
+    """True for Facebook's own account/security notices scraped as if they were replies."""
+    lowered = fold_text(text).casefold()
+    return any(marker in lowered for marker in PLATFORM_CHROME_MARKERS)
+
+
 CHROME_LINES = {
     "like",
     "love",
@@ -320,9 +344,15 @@ def should_follow_url(url: str) -> bool:
 
 
 def clean_facebook_text(text: str, *, author: str | None = None) -> str:
+    """Strip Facebook chrome and fold styled characters onto ASCII.
+
+    Every post and comment body passes through here before `mention_kind`, `_assemble`
+    and `_title_from`, so folding once at this point is what lets the shared classifier
+    read a post written as 𝗥𝗘𝗚𝗜𝗦𝗧𝗥𝗔𝗧𝗜𝗢𝗡 𝗜𝗦 𝗡𝗢𝗪 𝗢𝗣𝗘𝗡.
+    """
     lines: list[str] = []
     author_key = (author or "").casefold()
-    for raw in text.replace("\r", "").splitlines():
+    for raw in fold_text(text).replace("\r", "").splitlines():
         line = raw.strip()
         if not line:
             continue
@@ -461,9 +491,13 @@ def _assemble(
     *,
     location: str,
 ) -> str:
+    # The group's configured location is deliberately NOT written into the document.
+    # Naming the country here made `extract_location` read it off this preamble rather
+    # than off the post, so a Malaysian announcement came out as country="PH" at 0.75
+    # confidence: it cleared the eligibility gate, earned a free confidence signal, and
+    # collected 38 scoring points it had not earned.
     parts = [
-        f"Posted in a {location} competition community on Facebook.",
-        f"Group: {post.group}",
+        f"Source: Facebook group post in {post.group}.",
     ]
     if post.author:
         parts.append(f"{post.author}: {post.text}".strip())
@@ -472,9 +506,17 @@ def _assemble(
     comments = list(post.comments)
     if extra and extra not in comments:
         comments.append(extra)
-    if comments:
+    # Only comments that look like an event join the document. Otherwise marketplace
+    # listings and promo replies drag their links in, and those links then become
+    # candidate registration URLs.
+    relevant = [
+        comment
+        for comment in comments
+        if comment is extra or mention_kind(comment.text, comment.urls) != "unrelated"
+    ]
+    if relevant:
         parts.append("Comments:")
-        for comment in comments:
+        for comment in relevant:
             label = comment.author or "Comment"
             parts.append(f"{label}: {comment.text}")
             for url in outbound_urls(comment.urls):
@@ -699,7 +741,7 @@ def comments_from_dom(records: Iterable[dict], post: FacebookPost) -> list[Faceb
     seen: set[str] = set()
     for record in records:
         text = clean_facebook_text(str(record.get("text") or ""), author=record.get("author"))
-        if len(text) < 8:
+        if len(text) < 8 or is_platform_chrome(text):
             continue
         hrefs = [str(item) for item in record.get("hrefs") or [] if item]
         comment_id = (
@@ -874,7 +916,7 @@ def apply_graphql_records(post: FacebookPost, records: Iterable[dict[str, Any]])
     comments: list[FacebookComment] = []
     for record in records:
         text = clean_facebook_text(str(record.get("text") or ""))
-        if not text:
+        if not text or is_platform_chrome(text):
             continue
         urls = extract_urls(text, record.get("urls") or [])
         kind = record.get("kind")

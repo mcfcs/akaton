@@ -24,6 +24,7 @@ from akaton.domain.models import (
 from akaton.processing.classifier import classify_category, classify_document
 from akaton.processing.normalize import (
     extract_edition,
+    fold_text,
     is_listing_url,
     is_registration_url,
     normalize_organizer,
@@ -274,7 +275,9 @@ def extract_deterministically(
     published: datetime | None = None,
 ) -> ExtractionEnvelope:
     now = now or datetime.now(UTC)
-    combined = "\n".join(filter(None, (context.title, context.snippet, context.text)))
+    # Folded once here so the date regexes, location and eligibility matching all see
+    # ASCII. Social posts arrive in mathematical-bold, where 𝟮𝟬𝟮𝟲 defeats \b20\d{2}\b.
+    combined = fold_text("\n".join(filter(None, (context.title, context.snippet, context.text))))
     dates = extract_labeled_dates(combined, published)
     title = context.title or context.metadata.get("og:title") or context.metadata.get("title")
     organizer = context.metadata.get("organizer") or context.metadata.get("author")

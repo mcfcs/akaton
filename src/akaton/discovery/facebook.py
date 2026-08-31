@@ -169,7 +169,11 @@ EXTRACT_COMMENTS_JS = """
 () => {
   const nodes = Array.from(
     document.querySelectorAll('[role="article"][aria-label^="Comment by"]')
-  );
+  ).filter((el) => !el.closest(
+    // Meta's account and security dialogs render as articles too, and were being
+    // scraped as replies. Anything inside site chrome is not part of the thread.
+    '[role="dialog"], [role="banner"], [role="navigation"], [role="complementary"]'
+  ));
   return nodes.map((el) => {
     const aria = el.getAttribute("aria-label") || "";
     const author = aria.replace(/^Comment by\\s+/i, "").split(/\\s+in\\s+/)[0].trim();

@@ -16,6 +16,17 @@ TRACKING_KEYS = {
 TRACKING_PREFIXES = ("utm_",)
 
 
+def fold_text(value: str | None) -> str:
+    """Map styled codepoints onto ASCII, keeping case and punctuation.
+
+    Social posts are written in mathematical-bold and fullwidth characters, so a
+    substring match for "registration is now open" misses 𝗥𝗘𝗚𝗜𝗦𝗧𝗥𝗔𝗧𝗜𝗢𝗡 𝗜𝗦 𝗡𝗢𝗪 𝗢𝗣𝗘𝗡
+    and a year regex misses 𝟮𝟬𝟮𝟲. `normalize_text` also folds case and strips
+    punctuation, which would break terms like "hack-a-thon", so this does NFKC alone.
+    """
+    return unicodedata.normalize("NFKC", value) if value else ""
+
+
 def normalize_text(value: str | None) -> str:
     if not value:
         return ""

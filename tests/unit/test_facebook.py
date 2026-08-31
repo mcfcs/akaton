@@ -11,8 +11,10 @@ from akaton.discovery.facebook_parse import (
     FacebookComment,
     FacebookPost,
     apply_graphql_records,
+    comments_from_dom,
     group_feed_url,
     groups_from_config,
+    is_platform_chrome,
     mention_kind,
     needs_comment_expansion,
     post_from_dom,
@@ -76,7 +78,11 @@ def test_direct_announcement_without_an_outbound_page_is_prefetched():
     seed = seeds[0]
     assert "facebook.com/groups/philhacks/permalink/4116540755148003" in str(seed.url)
     assert seed.content and "DICT Hack4Gov" in seed.content
-    assert "Philippines" in seed.content
+    assert "philhacks" in seed.content
+    # The group's configured country must not be written into the document: extraction
+    # would then read the location off this harness text instead of off the post, which
+    # is what made a Malaysian announcement come out as Philippine.
+    assert "Philippines" not in seed.content.split("\n", 1)[0]
 
 
 def test_google_form_stays_on_the_facebook_document():
@@ -94,9 +100,51 @@ def test_google_form_stays_on_the_facebook_document():
 
 
 def test_a_question_that_mentions_register_is_still_a_question():
-    assert (
-        mention_kind("pwede po ba manuod if hindi naka register sa egov hackaton?") == "question"
+    assert mention_kind("pwede po ba manuod if hindi naka register sa egov hackaton?") == "question"
+
+
+def test_meta_account_notices_are_not_comments():
+    """A real run scraped 40 of these, dragging accountscenter.facebook.com links along."""
+    records = [
+        {"text": "You're now using a Meta Account on Facebook.", "hrefs": []},
+        {
+            "text": (
+                "We noticed a new login from a device or location you don't usually use. "
+                "Please review it."
+            ),
+            "hrefs": ["https://accountscenter.facebook.com/password_and_security"],
+        },
+        {
+            "text": "Meta Accounts are coming to Facebook. You'll be updated to yours soon.",
+            "hrefs": [],
+        },
+        {"text": "Hack4Gov 2026 registration is now open", "hrefs": []},
+    ]
+    comments = comments_from_dom(records, _post())
+    assert [comment.text for comment in comments] == ["Hack4Gov 2026 registration is now open"]
+
+
+def test_platform_chrome_predicate_leaves_real_replies_alone():
+    assert is_platform_chrome("You're now using a Meta Account on Facebook.") is True
+    assert is_platform_chrome("Sino may alam na hackathon this month?") is False
+
+
+def test_unrelated_comments_do_not_contribute_links_to_the_document():
+    """Marketplace and promo replies were importing their URLs into seed.links."""
+    post = _post(
+        text="DICT Hack4Gov 2026 registration is now open. Deadline 30 September 2026.",
+        comments=[
+            FacebookComment(
+                comment_id="1",
+                text="Adidas Evo SL BAPE Mismatched Sz 7 / 9.5m PHP 13,999 pandacan, Manila",
+                urls=["https://jollibee.onelink.me/U65H/ppu7ow43"],
+            )
+        ],
     )
+    seeds = thread_to_seeds(post, cutoff=CUTOFF)
+    assert len(seeds) == 1
+    assert "jollibee.onelink.me" not in (seeds[0].content or "")
+    assert "Adidas" not in (seeds[0].content or "")
 
 
 def test_a_research_conference_is_not_treated_as_a_hackathon():
