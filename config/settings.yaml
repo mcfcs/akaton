@@ -23,6 +23,14 @@ monthly_search_budget: 2000
 # without linking to it. Taken out of the run's own allocation rather than added to it,
 # so a busy week in the group cannot crowd out the scheduled rotation.
 mention_leads_per_run: 3
+# The model ladder. OLLAMA_BASE_URL is asked first; OLLAMA_ESCALATION_URL is asked only
+# when the first left the extraction below this confidence, or left a title, date or
+# category still unresolved. A clean page never reaches the second host.
+llm_escalation_confidence: 0.70
+# Escalations allowed per process. The fallback is typically a shared box that reloads a
+# model between callers, which was measured at 5.8, 16.1 and 39.9 seconds, so a run of
+# thin pages would otherwise serialise dozens of those.
+llm_escalations_per_run: 5
 refresh_interval_hours: 24
 notification_threshold: 65
 high_priority_threshold: 80

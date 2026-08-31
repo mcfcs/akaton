@@ -4,8 +4,11 @@ from __future__ import annotations
 import secrets
 from datetime import date
 from functools import partial
+from time import monotonic
 from typing import Annotated
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -32,6 +35,62 @@ from akaton.processing.mentions import canonical_token
 # Jobs the dashboard may stop. Named rather than free-form so a typo cannot cancel
 # something that is not a job, and so the set is visible in one place.
 CANCELLABLE_JOBS = frozenset({"discovery", "refresh", "backfill"})
+
+
+def llm_host_id(provider) -> str:
+    """A short, stable name for a model host: its network location."""
+    base = getattr(provider, "base_url", "") or getattr(provider, "name", "llm")
+    return urlsplit(base).netloc or str(base)
+
+
+# Reachability is a network call and the dashboard polls every 8 seconds, so the answer is
+# cached. 30s is short enough to notice a laptop waking up and long enough that watching
+# the page does not become traffic of its own.
+_PROBE_TTL_SECONDS = 30.0
+_probe_cache: dict[str, tuple[float, dict]] = {}
+
+
+async def probe_llm_hosts(providers: list) -> list[dict]:
+    tiers = []
+    for index, provider in enumerate(providers):
+        host = llm_host_id(provider)
+        tier = {
+            "host": host,
+            "model": getattr(provider, "model", None),
+            "primary": index == 0,
+            "role": "primary" if index == 0 else "escalation",
+            **await _probe(provider, host),
+        }
+        tiers.append(tier)
+    return tiers
+
+
+async def _probe(provider, host: str) -> dict:
+    cached = _probe_cache.get(host)
+    now = monotonic()
+    if cached and now - cached[0] < _PROBE_TTL_SECONDS:
+        return cached[1]
+    base = getattr(provider, "base_url", None)
+    result: dict[str, object] = {"reachable": None, "loaded": []}
+    if base:
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(4, connect=2)) as client:
+                response = await client.get(f"{base}/api/ps")
+                response.raise_for_status()
+                result = {
+                    "reachable": True,
+                    "loaded": [
+                        item.get("name") for item in response.json().get("models", []) or []
+                    ],
+                }
+        except Exception as exc:
+            result = {"reachable": False, "loaded": [], "error": type(exc).__name__}
+    _probe_cache[host] = (now, result)
+    return result
+
+
+class PrimaryLLMRequest(BaseModel):
+    host: str
 
 
 class EditRequest(BaseModel):
@@ -68,9 +127,11 @@ def create_dashboard(
     bot: BotController | None = None,
     notifier=None,
     reprocess=None,
+    llm_providers: list | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Akaton Monitor", docs_url=None, redoc_url=None)
     bot = bot or BotController()
+    llm_providers = llm_providers if llm_providers is not None else []
 
     async def authorize(x_akaton_token: Annotated[str | None, Header()] = None) -> None:
         expected = config.runtime.dashboard_token
@@ -382,6 +443,31 @@ def create_dashboard(
             "message": f"Re-ran candidate {candidate_id}: {outcome.state}",
         }
 
+    @app.get("/api/llm", dependencies=secured)
+    async def llm_hosts() -> dict[str, object]:
+        """The model ladder and whether each host is answering."""
+        return {
+            "tiers": await probe_llm_hosts(llm_providers),
+            "escalation_confidence": config.app.llm_escalation_confidence,
+            "escalations_per_run": config.app.llm_escalations_per_run,
+        }
+
+    @app.post("/api/actions/llm/primary", dependencies=secured)
+    async def set_primary_llm(request: PrimaryLLMRequest) -> dict[str, object]:
+        """Reorder the ladder at runtime, so a host can be swapped without a restart."""
+        names = [llm_host_id(item) for item in llm_providers]
+        if request.host not in names:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown host; configured: {', '.join(names) or 'none'}"
+            )
+        index = names.index(request.host)
+        # A list mutated in place, because the pipeline holds this exact object.
+        llm_providers.insert(0, llm_providers.pop(index))
+        return {
+            "primary": request.host,
+            "message": f"{request.host} is now asked first",
+        }
+
     @app.post("/api/actions/jobs/{name}/cancel", dependencies=secured)
     async def cancel_job(name: str) -> dict[str, object]:
         """Stop a running discovery, refresh or backdate."""
@@ -595,6 +681,12 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
       <button id="bf-cancel" hidden class="rounded-lg border border-rose/50 bg-panel px-3 py-2 text-sm font-semibold text-rose hover:border-rose">Cancel</button>
     </div>
     <div id="bf-status" class="mt-3 flex flex-wrap items-center gap-2 text-xs text-emerald-200/60"></div>
+  </section>
+
+  <section id="llm-panel" hidden class="mt-4 rounded-xl border border-edge bg-panel/90 p-5">
+    <h2 class="text-base font-semibold">Extraction models</h2>
+    <p id="llm-hint" class="mb-3 mt-1 text-xs text-emerald-200/50"></p>
+    <div id="llm-tiers" class="flex flex-wrap gap-3"></div>
   </section>
 
   <section class="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
@@ -1031,6 +1123,45 @@ function openLeadEditor(lead) {
   $('modal').hidden = false;
 }
 
+function renderLlm(data) {
+  const tiers = (data && data.tiers) || [];
+  $('llm-panel').hidden = tiers.length < 1;
+  if (!tiers.length) return;
+  $('llm-hint').textContent = tiers.length > 1
+    ? 'The first host is asked for every extraction that needs one. The second is asked only when the first leaves confidence below '
+      + data.escalation_confidence + ', at most ' + data.escalations_per_run + ' times a run.'
+    : 'One host configured. Extraction is deterministic first; the model only fills gaps.';
+  const box = $('llm-tiers'); box.replaceChildren();
+  for (const tier of tiers) {
+    const card = document.createElement('div');
+    card.className = 'min-w-[240px] flex-1 rounded-lg border px-3 py-2 '
+      + (tier.primary ? 'border-mint/50 bg-mint/5' : 'border-edge');
+    const head = document.createElement('div');
+    head.className = 'flex items-center justify-between gap-2';
+    const name = document.createElement('span');
+    name.className = 'text-sm font-semibold'; name.textContent = tier.model || '—';
+    head.append(name);
+    head.append(chip(tier.role, tier.primary ? 'bg-mint/15 text-mint' : 'bg-white/5 text-emerald-200/60'));
+    card.append(head);
+    const meta = document.createElement('div');
+    meta.className = 'mt-1 flex flex-wrap items-center gap-2 text-[11px] text-emerald-200/50';
+    meta.append(document.createTextNode(tier.host));
+    meta.append(chip(tier.reachable === true ? 'reachable' : tier.reachable === false ? 'unreachable' : 'unknown',
+      tier.reachable === true ? 'bg-mint/15 text-mint' : tier.reachable === false ? 'bg-rose/15 text-rose' : 'bg-white/5'));
+    if ((tier.loaded || []).length) meta.append(chip('loaded: ' + tier.loaded.join(', '), 'bg-white/5 text-emerald-200/60'));
+    card.append(meta);
+    if (!tier.primary) {
+      const promote = rowButton('Make primary', SMALL_BUTTON, () => api('/api/actions/llm/primary', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({host: tier.host}),
+      }), 'Ask this host first from now on');
+      promote.classList.add('mt-2');
+      card.append(promote);
+    }
+    box.append(card);
+  }
+}
+
 function renderReasons(counts) {
   const box = $('reasons'); box.replaceChildren();
   const entries = Object.entries(counts || {});
@@ -1075,9 +1206,10 @@ async function load() {
   try {
     const candidateUrl = '/api/candidates?limit=60' + (filter ? '&reason=' + encodeURIComponent(filter) : '');
     const eventsUrl = '/api/events' + ($('show-archived').checked ? '?archived=true' : '');
-    const [s, ev, cand, rej, searches, leads] = await Promise.all([
-      api('/api/status'), api(eventsUrl), api(candidateUrl), api('/api/rejections'), api('/api/searches'), api('/api/leads')
+    const [s, ev, cand, rej, searches, leads, llm] = await Promise.all([
+      api('/api/status'), api(eventsUrl), api(candidateUrl), api('/api/rejections'), api('/api/searches'), api('/api/leads'), api('/api/llm')
     ]);
+    renderLlm(llm);
     renderLeads(leads);
     $('k-candidates').textContent = s.counts.candidates;
     $('k-events').textContent = s.counts.events;

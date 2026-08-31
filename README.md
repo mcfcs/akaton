@@ -375,6 +375,44 @@ extractor, so they favour it, and they contain none of the awkward real-world pa
 exists to rescue. What they do show is that no model here reads `document_kind` reliably, and that
 a 27B model is not buying accuracy for its cost.
 
+Rebuild the table for your own hosts with `tools/llm_bench.py`, which warms each model before
+timing it and prints the deterministic baseline alongside — a model that cannot beat that baseline
+on a column is not earning its place there.
+
+```powershell
+$env:PYTHONPATH='src'
+python tools/llm_bench.py --host http://your-host:11434
+```
+
+### Two hosts, and when the second is asked
+
+`OLLAMA_BASE_URL` is asked for every extraction that needs one. `OLLAMA_ESCALATION_URL`, if set, is
+asked **only** when the first host left the merged confidence below `llm_escalation_confidence`
+(0.70, one notch under the 0.75 that summons a model at all) or left a title, date or category
+unresolved — and at most `llm_escalations_per_run` times. A clean page never reaches it.
+
+That shape exists because of what the two machines actually are. A dedicated 8GB box keeps one
+model resident and answers with 0.3s of load; a shared 24GB box holds whatever its other users
+last asked for, and reloading a model on it was measured at 5.8s, 16.1s and **39.9s**. So the small
+host is the everyday one and the big one is worth its latency only when the small one came up
+short. 8GB caps the model at about 9B: `qwen2.5:14b` loads but spills to CPU, keeping 5.8GB of
+9.3GB in VRAM.
+
+Escalation cannot make an extraction worse. The second pass goes through the same
+`merge_extraction` as the first, so it may only fill fields still empty and may only *downgrade* a
+document kind.
+
+Failover is the same mechanism. A refused connection moves straight to the next host, which is what
+happens when the everyday host is a laptop and the laptop is asleep. The connect timeout is 5
+seconds and separate from the 180-second read timeout — a cold model load legitimately takes tens of
+seconds, but an absent host should not take three minutes to notice — and a refused connection is
+not retried, because retrying doubles the wait for an answer that is not coming. If no host answers
+at all, extraction simply stays deterministic.
+
+The dashboard shows both hosts, whether each is reachable, which model each currently has loaded,
+and a **Make primary** button that reorders the ladder at runtime — so the machines can be swapped
+without editing `.env` and restarting.
+
 `LLM_PROVIDER=disabled` is a supported configuration and makes runs dramatically faster. Discovery
 still works: the ImaGnation page, for instance, extracts at 0.83 confidence deterministically and
 never calls the model. Disabling it costs recall only on pages the regexes cannot read, which are

@@ -57,15 +57,24 @@ class OllamaLLMProvider:
         *,
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 180,
+        connect_timeout_seconds: float = 5,
     ) -> None:
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("OLLAMA_BASE_URL must be an HTTP(S) URL")
         if not model:
             raise ValueError("OLLAMA_MODEL is required")
-        self.endpoint = f"{base_url.rstrip('/')}/api/chat"
+        self.base_url = base_url.rstrip("/")
+        self.endpoint = f"{self.base_url}/api/chat"
         self.model = model
         self.client = client
         self.timeout_seconds = timeout_seconds
+        # Separate from the read timeout on purpose. A cold model load legitimately takes
+        # tens of seconds, so the read timeout has to stay generous; but a host that is
+        # not there should be discovered in seconds, not in three minutes.
+        self.connect_timeout_seconds = connect_timeout_seconds
+
+    def _timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(self.timeout_seconds, connect=self.connect_timeout_seconds)
 
     async def extract(self, context: DocumentContext) -> ExtractionEnvelope:
         schema = ExtractionEnvelope.model_json_schema()
@@ -78,7 +87,7 @@ class OllamaLLMProvider:
             f"{json.dumps(schema, separators=(',', ':'))}"
         )
         own_client = self.client is None
-        client = self.client or httpx.AsyncClient(timeout=self.timeout_seconds)
+        client = self.client or httpx.AsyncClient(timeout=self._timeout())
         try:
             for attempt in range(2):
                 try:
@@ -103,6 +112,12 @@ class OllamaLLMProvider:
                     status = (
                         exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else 0
                     )
+                    # A host that refuses the connection is not busy, it is away — most
+                    # often a laptop asleep. Retrying doubles the wait for an answer that
+                    # is not coming, and with llm_concurrency at 1 that stalls every
+                    # candidate behind it. Timeouts and 5xx are still worth a second try.
+                    if isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout):
+                        raise
                     if attempt == 1 or (status and status < 500):
                         raise
                     await asyncio.sleep(2)
@@ -218,8 +233,28 @@ def merge_extraction(
     )
 
 
+CRITICAL_AMBIGUITIES = {"missing_title", "missing_dates", "unknown_category"}
+
+
 def should_use_llm(extraction: ExtractionEnvelope) -> bool:
-    critical = {"missing_title", "missing_dates", "unknown_category"}
     return extraction.overall_confidence < 0.75 or bool(
-        critical.intersection(extraction.ambiguities)
+        CRITICAL_AMBIGUITIES.intersection(extraction.ambiguities)
+    )
+
+
+def should_escalate(extraction: ExtractionEnvelope, threshold: float = 0.70) -> bool:
+    """Whether a second, better-resourced model is worth asking after the first tried.
+
+    Mirrors `should_use_llm` one notch lower. The everyday host runs a model that fits in
+    8GB of VRAM; the fallback is a shared 24GB box where a model load alone was measured
+    at 5.8, 16.1 and 39.9 seconds. So escalation has to be the exception: it happens only
+    when the small model left the extraction below `threshold` or failed to resolve one of
+    the three ambiguities that actually block an event from being usable.
+
+    Escalating cannot make an extraction worse. The second pass goes through the same
+    `merge_extraction`, which only fills fields still empty and may only downgrade a
+    document kind.
+    """
+    return extraction.overall_confidence < threshold or bool(
+        CRITICAL_AMBIGUITIES.intersection(extraction.ambiguities)
     )

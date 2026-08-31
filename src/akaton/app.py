@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib.util
+import logging
 from datetime import date
 from zoneinfo import ZoneInfo
 
@@ -36,6 +37,8 @@ from akaton.pipeline import CandidatePipeline
 from akaton.processing.authority import organizer_vocabulary
 from akaton.processing.llm import OllamaLLMProvider, OpenAILLMProvider
 
+logger = logging.getLogger(__name__)
+
 
 def _dependencies(config: ConfigBundle, notifier=None, *, database: Database | None = None):
     database = database or Database(config.runtime.database_url)
@@ -49,20 +52,35 @@ def _dependencies(config: ConfigBundle, notifier=None, *, database: Database | N
     )
     browser = PatchrightRenderer() if importlib.util.find_spec("patchright") else None
     fetcher = FetchManager(http, policies, browser=browser, proxies=proxy_manager)
-    llm = None
-    if (
-        config.runtime.llm_provider == "openai"
-        and config.runtime.openai_api_key
-        and config.runtime.openai_model
-    ):
-        llm = OpenAILLMProvider(config.runtime.openai_api_key, config.runtime.openai_model)
-    elif config.runtime.llm_provider == "ollama":
-        llm = OllamaLLMProvider(
-            config.runtime.ollama_base_url,
-            config.runtime.ollama_model,
-        )
-    pipeline = CandidatePipeline(database, config, fetcher, llm=llm, notifier=notifier)
+    providers = _llm_providers(config)
+    pipeline = CandidatePipeline(
+        database, config, fetcher, llm_providers=providers, notifier=notifier
+    )
     return database, fetcher, pipeline
+
+
+def _llm_providers(config: ConfigBundle) -> list:
+    """The model ladder, in the order it will be tried.
+
+    An unset OLLAMA_BASE_URL is not an error: extraction is deterministic first and the
+    model only fills gaps, so no host simply means no gap filling. Raising here would
+    stop the whole service over an optional dependency.
+    """
+    runtime = config.runtime
+    if runtime.llm_provider == "openai" and runtime.openai_api_key and runtime.openai_model:
+        return [OpenAILLMProvider(runtime.openai_api_key, runtime.openai_model)]
+    if runtime.llm_provider != "ollama":
+        return []
+    providers = []
+    for url, model in (
+        (runtime.ollama_base_url, runtime.ollama_model),
+        (runtime.ollama_escalation_url, runtime.ollama_escalation_model),
+    ):
+        if url and model:
+            providers.append(OllamaLLMProvider(url, model))
+    if not providers:
+        logger.warning("llm_host_not_configured", extra={"provider": runtime.llm_provider})
+    return providers
 
 
 def _search_provider(config: ConfigBundle):
@@ -207,9 +225,16 @@ def _web_server(
     bot: BotController | None = None,
     notifier=None,
     reprocess=None,
+    llm_providers: list | None = None,
 ) -> uvicorn.Server:
     application = create_dashboard(
-        database, controller, config, bot=bot, notifier=notifier, reprocess=reprocess
+        database,
+        controller,
+        config,
+        bot=bot,
+        notifier=notifier,
+        reprocess=reprocess,
+        llm_providers=llm_providers,
     )
     server_config = uvicorn.Config(
         application,
@@ -270,7 +295,13 @@ async def _dashboard(config: ConfigBundle) -> None:
     controller = MonitorController(
         scheduler, discovery.run, refresh.run, sources=_source_names(discovery)
     )
-    server = _web_server(config, database, controller, reprocess=_reprocessor(pipeline))
+    server = _web_server(
+        config,
+        database,
+        controller,
+        reprocess=_reprocessor(pipeline),
+        llm_providers=pipeline.llm_providers,
+    )
     try:
         await server.serve()
     finally:
@@ -325,6 +356,7 @@ async def _run(config: ConfigBundle) -> None:
         bot=bot_controller,
         notifier=notifier,
         reprocess=_reprocessor(pipeline),
+        llm_providers=pipeline.llm_providers,
     )
     await bot_controller.start()
     try:

@@ -16,6 +16,7 @@ from akaton.domain.models import (
     CandidateSeed,
     DocumentContext,
     EventFacts,
+    ExtractionEnvelope,
     FetchResult,
     NotificationPayload,
 )
@@ -32,7 +33,12 @@ from akaton.processing.authority import authority_for_url
 from akaton.processing.canonical import choose_urls
 from akaton.processing.dedup import MatchDecision, compare_events
 from akaton.processing.deterministic import extract_deterministically
-from akaton.processing.llm import LLMProvider, merge_extraction, should_use_llm
+from akaton.processing.llm import (
+    LLMProvider,
+    merge_extraction,
+    should_escalate,
+    should_use_llm,
+)
 from akaton.processing.relevance import is_plausibly_relevant, looks_like_old_news
 from akaton.processing.scorer import score_event
 from akaton.processing.verifier import verify_event
@@ -64,15 +70,68 @@ class CandidatePipeline:
         *,
         llm: LLMProvider | None = None,
         notifier: Notifier | None = None,
+        llm_providers: list[LLMProvider] | None = None,
     ) -> None:
         self.database = database
         self.config = config
         self.fetcher = fetcher
-        self.llm = llm
+        # A ladder, tried in order: the everyday host first, then a better-resourced one
+        # only if the first left the extraction thin. `llm=` stays as the one-tier
+        # shorthand, which is what most deployments and every test want.
+        self.llm_providers = list(llm_providers or ([llm] if llm else []))
         self.notifier = notifier
+        # Escalations are counted for the life of this pipeline rather than per document,
+        # because the cost being bounded is the fallback host's time, not any one page's.
+        self._escalations = 0
         # Ollama serialises requests per model, so letting every parallel candidate fire
         # its own extraction only builds a queue on the server until clients time out.
         self._llm_limit = asyncio.Semaphore(config.app.llm_concurrency)
+
+    async def _extract_with_models(
+        self,
+        context: DocumentContext,
+        extraction: ExtractionEnvelope,
+        candidate_id: int,
+    ) -> tuple[ExtractionEnvelope, bool]:
+        """Walk the model ladder, stopping as soon as the answer is good enough.
+
+        The second host is only asked when the first left the extraction thin, so a clean
+        page costs one small-model call and an unreachable host costs one connect timeout.
+        Every pass is merged, never substituted, so a later model can fill gaps but cannot
+        overwrite what was read directly or assert its own confidence.
+        """
+        used = False
+        threshold = self.config.app.llm_escalation_confidence
+        for index, provider in enumerate(self.llm_providers):
+            if index and not should_escalate(extraction, threshold):
+                break
+            if index and self._escalations >= self.config.app.llm_escalations_per_run:
+                logger.info(
+                    "llm_escalation_budget_spent",
+                    extra={"candidate_id": candidate_id, "cap": self._escalations},
+                )
+                break
+            try:
+                async with self._llm_limit:
+                    completion = await provider.extract(context)
+            except Exception as exc:
+                logger.warning(
+                    "llm_extraction_failed",
+                    extra={
+                        "candidate_id": candidate_id,
+                        "provider": getattr(provider, "name", "?"),
+                        "tier": index,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                # Fall through to the next tier. A refused connection here is the
+                # sleeping-laptop case, and the point of having a second host.
+                continue
+            if index:
+                self._escalations += 1
+            extraction = merge_extraction(extraction, completion, context)
+            used = True
+        return extraction, used
 
     async def process(
         self, seed: CandidateSeed, *, historical_test: bool = False
@@ -204,20 +263,10 @@ class CandidatePipeline:
         # Relevance first, thinness second. `should_use_llm` fires on unknown_category,
         # so without this an off-topic page is guaranteed a model call while a clean
         # event page never gets one.
-        if self.llm and is_plausibly_relevant(context) and should_use_llm(extraction):
-            try:
-                async with self._llm_limit:
-                    completion = await self.llm.extract(context)
-                # Merged, not replaced: the model fills gaps and may downgrade a
-                # document kind, but cannot overwrite facts read directly or assert
-                # its own confidence.
-                extraction = merge_extraction(extraction, completion, context)
-                llm_used = True
-            except Exception as exc:
-                logger.warning(
-                    "llm_extraction_failed",
-                    extra={"candidate_id": candidate_id, "error_type": type(exc).__name__},
-                )
+        if self.llm_providers and is_plausibly_relevant(context) and should_use_llm(extraction):
+            extraction, llm_used = await self._extract_with_models(
+                context, extraction, candidate_id
+            )
 
         async with self.database.session() as session:
             repo = Repository(session)

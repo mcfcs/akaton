@@ -57,6 +57,12 @@ class AppSettings(BaseModel):
     # allocation, never added to it, and capped at a third of it so the scheduled
     # rotation is never crowded out by a busy week in the group.
     mention_leads_per_run: int = Field(default=3, ge=0)
+    # Below this merged confidence the everyday model is judged not to have answered, and
+    # the second host is asked. One notch under the 0.75 that summons a model at all.
+    llm_escalation_confidence: float = Field(default=0.70, ge=0.0, le=1.0)
+    # The fallback host is shared and reloads models between callers — measured at 5.8,
+    # 16.1 and 39.9 seconds. Without a cap, a run of thin pages would serialise dozens.
+    llm_escalations_per_run: int = Field(default=5, ge=0)
     refresh_interval_hours: int = Field(default=24, ge=1)
     notification_threshold: int = Field(default=65, ge=0, le=100)
     high_priority_threshold: int = Field(default=80, ge=0, le=100)
