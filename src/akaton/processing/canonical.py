@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from akaton.processing.links import is_trusted_registration_url
 from akaton.processing.normalize import is_registration_url, normalize_url
 
 
@@ -10,6 +11,8 @@ def choose_urls(
     final_url: str | None,
     links: list[str],
     metadata: dict,
+    *,
+    sources: dict | None = None,
 ) -> tuple[str, str | None]:
     """Pick the event's canonical URL and, if present, a registration link.
 
@@ -34,7 +37,15 @@ def choose_urls(
             if url and str(url).startswith(("http://", "https://"))
         )
     )
-    registration = next((url for url in link_candidates if is_registration_url(url)), None)
+    # With a sources config the host is checked too, so a scraped `/register` path on an
+    # unknown host cannot become the alert's clickable Register button. Without one this
+    # stays a pure path-shape test, which is all the URL-only callers need.
+    accept = (
+        (lambda url: is_trusted_registration_url(url, sources))
+        if sources is not None
+        else is_registration_url
+    )
+    registration = next((url for url in link_candidates if accept(url)), None)
     return canonical, registration
 
 

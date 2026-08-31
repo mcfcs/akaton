@@ -74,6 +74,34 @@ def test_root_canonical_is_kept_when_the_page_itself_is_the_root():
     assert canonical == "https://www.aifest.ph/"
 
 
+def test_a_hostile_register_path_never_becomes_the_registration_url(config):
+    """Scraped links are attacker-influenced; /register on any host is not enough."""
+    links = [
+        "https://evil.example/register",
+        "https://bit.ly/register",
+        "https://forms.gle/legit123",
+    ]
+    _, registration = choose_urls("https://example.ph/e", None, links, {}, sources=config.sources)
+    assert registration == "https://forms.gle/legit123"
+
+
+def test_no_registration_url_at_all_beats_a_hostile_one(config):
+    _, registration = choose_urls(
+        "https://example.ph/e",
+        None,
+        ["https://evil.example/register", "https://sk-qr.com/apply"],
+        {},
+        sources=config.sources,
+    )
+    assert registration is None
+
+
+def test_url_only_callers_keep_the_path_shape_behaviour():
+    """Without a sources config this stays a pure path test, which its callers rely on."""
+    _, registration = choose_urls("https://example.ph/e", None, ["https://example.ph/apply"], {})
+    assert registration == "https://example.ph/apply"
+
+
 def test_redirect_target_wins_over_the_requested_url():
     canonical, _ = choose_urls(
         "https://example.ph/old-link",

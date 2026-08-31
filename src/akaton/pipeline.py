@@ -209,7 +209,11 @@ class CandidatePipeline:
                 },
             )
             canonical, registration = choose_urls(
-                str(seed.url), fetch.final_url, fetch.links, fetch.metadata
+                str(seed.url),
+                fetch.final_url,
+                fetch.links,
+                fetch.metadata,
+                sources=self.config.sources,
             )
             extraction.facts.canonical_url = canonical
             extraction.facts.registration_url = registration or extraction.facts.registration_url

@@ -65,6 +65,14 @@ class DatePrecision(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class LinkTrust(StrEnum):
+    """How a scraped link may be presented in an alert."""
+
+    CLICKABLE = "CLICKABLE"
+    PLAIN = "PLAIN"
+    DROP = "DROP"
+
+
 class CandidateState(StrEnum):
     DISCOVERED = "DISCOVERED"
     NORMALIZED = "NORMALIZED"

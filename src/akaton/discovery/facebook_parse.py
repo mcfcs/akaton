@@ -27,7 +27,8 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 from akaton.domain.models import CandidateSeed
 from akaton.processing.classifier import ACTION_TERMS, RECAP_TERMS, RESULT_TERMS, classify_category
-from akaton.processing.normalize import fold_text, is_registration_url
+from akaton.processing.links import FORM_HOSTS
+from akaton.processing.normalize import fold_text
 
 FACEBOOK_HOSTS = {
     "facebook.com",
@@ -343,6 +344,12 @@ def should_follow_url(url: str) -> bool:
     return any(host == suffix or host.endswith(f".{suffix}") for suffix in FOLLOW_HOST_SUFFIXES)
 
 
+def is_form_url(url: str) -> bool:
+    """A registration form on a reputable form host, which is not itself the event page."""
+    host = host_of(url)
+    return bool(host) and any(host == entry or host.endswith(f".{entry}") for entry in FORM_HOSTS)
+
+
 def clean_facebook_text(text: str, *, author: str | None = None) -> str:
     """Strip Facebook chrome and fold styled characters onto ASCII.
 
@@ -419,7 +426,12 @@ def mention_kind(text: str, urls: Iterable[str] | None = None) -> str:
         return "unrelated"
     lowered = body.casefold()
     event_urls = outbound_urls(urls or extract_urls(body))
-    followable = [url for url in event_urls if should_follow_url(url) or is_registration_url(url)]
+    # Host allowlist only. `is_registration_url` matches a `/register` path on any host,
+    # so including it here let a spam reply's link make a thread look like an event.
+    followable = [url for url in event_urls if should_follow_url(url)]
+    # A form link does not decide where the candidate points — the form is not the event
+    # page — but it is strong evidence the thread is a real call for entries.
+    has_form_link = any(is_form_url(url) for url in event_urls)
     if _has_any(lowered, RESULT_TERMS + RECAP_TERMS):
         return "recap"
     if _has_any(lowered, JOB_HINTS):
@@ -433,7 +445,7 @@ def mention_kind(text: str, urls: Iterable[str] | None = None) -> str:
     )
     teammate = _has_any(lowered, TEAMMATE_HINTS)
 
-    if followable:
+    if followable or (has_form_link and category):
         return "event"
     if teammate:
         return "teammate"
