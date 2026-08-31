@@ -30,7 +30,7 @@ from akaton.persistence.models import (
 from akaton.persistence.repository import Repository
 from akaton.processing.authority import authority_for_url
 from akaton.processing.canonical import choose_urls
-from akaton.processing.dedup import compare_events
+from akaton.processing.dedup import MatchDecision, compare_events
 from akaton.processing.deterministic import extract_deterministically
 from akaton.processing.llm import LLMProvider, merge_extraction, should_use_llm
 from akaton.processing.relevance import is_plausibly_relevant
@@ -275,24 +275,36 @@ class CandidatePipeline:
                 # URLs, which the outer two cannot see.
                 event = await repo.find_by_content_fingerprint(extraction.facts)
             if not event:
-                possible = await repo.candidate_events(extraction.facts)
-                for existing in possible:
+                # Scan the whole pool before parking anything. Returning on the first
+                # POSSIBLE_DUPLICATE abandoned the scan, so a genuine MERGE later in the
+                # pool was never reached and the candidate died against a weaker match.
+                parked: tuple[EventRow, MatchDecision] | None = None
+                for existing in await repo.candidate_events(extraction.facts):
                     match = compare_events(
                         EventFacts.model_validate(existing.current_facts), extraction.facts
                     )
                     if match.action == "MERGE":
                         event = existing
                         break
-                    if match.action == "POSSIBLE_DUPLICATE":
-                        await repo.transition_candidate(
-                            candidate,
-                            CandidateState.POSSIBLE_DUPLICATE,
-                            detail={"event_id": existing.id, "match_score": match.score},
-                            rejection_reasons=["POSSIBLE_DUPLICATE"],
-                        )
-                        return PipelineOutcome(
-                            candidate_id, CandidateState.POSSIBLE_DUPLICATE.value, existing.id
-                        )
+                    if match.action == "POSSIBLE_DUPLICATE" and parked is None:
+                        parked = (existing, match)
+                if event is None and parked is not None:
+                    existing, match = parked
+                    await repo.transition_candidate(
+                        candidate,
+                        CandidateState.POSSIBLE_DUPLICATE,
+                        detail={
+                            "event_id": existing.id,
+                            "match_score": match.score,
+                            # compare_events already works these out and they were being
+                            # thrown away, which is why parking here was silent.
+                            "reasons": list(match.reasons),
+                        },
+                        rejection_reasons=["POSSIBLE_DUPLICATE"],
+                    )
+                    return PipelineOutcome(
+                        candidate_id, CandidateState.POSSIBLE_DUPLICATE.value, existing.id
+                    )
 
             is_new = event is None
             if is_new:

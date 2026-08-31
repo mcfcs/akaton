@@ -47,3 +47,25 @@ def test_same_registration_url_merges():
     left.registration_url = "https://forms.gle/abc?utm_source=post"
     right.registration_url = "https://forms.gle/abc"
     assert compare_events(left, right).action == "MERGE"
+
+
+def test_two_runs_in_one_year_on_one_page_never_merge():
+    """The failure this was built for: same series, same year, same landing page.
+
+    URL identity fires before any date is consulted, so before the edition key carried a
+    month the September run merged onto March at 100 and never alerted.
+    """
+    left = _event("eGovPH Hackathon 2026", 2026, url="https://dict.gov.ph/egov-hackathon")
+    right = _event("eGovPH Hackathon 2026", 2026, url="https://dict.gov.ph/egov-hackathon")
+    left.edition_key, right.edition_key = "2026-03", "2026-09"
+    left.event_start = DateFact(value=datetime(2026, 3, 20, tzinfo=UTC), confidence=1)
+    right.event_start = DateFact(value=datetime(2026, 9, 14, tzinfo=UTC), confidence=1)
+    assert compare_events(left, right).action == "SEPARATE"
+
+
+def test_a_year_only_key_still_matches_its_own_refined_update():
+    """Stored rows carry year-granularity keys; a raw `!=` would split them all."""
+    left = _event("eGovPH Hackathon 2026", 2026, url="https://dict.gov.ph/egov-hackathon")
+    right = _event("eGovPH Hackathon 2026", 2026, url="https://dict.gov.ph/egov-hackathon")
+    right.edition_key = "2026-10"
+    assert compare_events(left, right).action == "MERGE"

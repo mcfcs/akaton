@@ -23,6 +23,7 @@ from akaton.domain.models import (
 )
 from akaton.processing import locale
 from akaton.processing.classifier import classify_category, classify_document
+from akaton.processing.editions import is_trustworthy
 from akaton.processing.normalize import (
     extract_edition,
     fold_text,
@@ -313,6 +314,9 @@ def extract_deterministically(
     edition_key, edition_year = extract_edition(
         title,
         facts.event_start.value.year if facts.event_start.value else None,
+        # Only a trustworthy start refines the key to a month. An inferred year would
+        # manufacture a March/September split out of a guess.
+        month=(facts.event_start.value.month if is_trustworthy(facts.event_start) else None),
     )
     facts.edition_key = edition_key
     facts.edition_year = edition_year

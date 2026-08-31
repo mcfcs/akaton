@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from akaton.domain.enums import CandidateState, NotificationState
 from akaton.domain.models import (
     CandidateSeed,
+    DateFact,
     EventFacts,
     ExtractionEnvelope,
     FetchResult,
@@ -34,6 +36,7 @@ from akaton.processing.dedup import (
     fingerprint_text,
     is_same_announcement,
 )
+from akaton.processing.editions import dates_contradict, editions_conflict
 from akaton.processing.normalize import normalize_url
 
 # A repost can trail the original by weeks. Beyond this the pair is more likely to be a
@@ -42,8 +45,27 @@ CONTENT_MATCH_WINDOW_DAYS = 180
 
 
 def _edition_compatible(row: EventRow, facts: EventFacts) -> bool:
-    """Never merge two runs of an annual series that happen to share their wording."""
-    return not (row.edition_year and facts.edition_year and row.edition_year != facts.edition_year)
+    """Never merge two runs of a recurring series that happen to share their wording.
+
+    The fingerprint rungs match on text alone, so without this a September announcement
+    worded like March's collapses onto it and never alerts. `current_facts` is already
+    JSON on the row, so reading the stored start costs no extra query.
+    """
+    if row.edition_year and facts.edition_year and row.edition_year != facts.edition_year:
+        return False
+    if editions_conflict(row.edition_key, facts.edition_key):
+        return False
+    return not dates_contradict(_stored_start(row), facts.event_start)
+
+
+def _stored_start(row: EventRow) -> DateFact | None:
+    value = (row.current_facts or {}).get("event_start")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return DateFact.model_validate(value)
+    except ValidationError:
+        return None
 
 
 def stable_hash(value: Any) -> str:

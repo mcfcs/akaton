@@ -114,7 +114,19 @@ def is_listing_url(url: str) -> bool:
     return any(key in ("q", "query", "search") for key, _ in parse_qsl(parts.query))
 
 
-def extract_edition(title: str | None, *date_years: int | None) -> tuple[str | None, int | None]:
+def extract_edition(
+    title: str | None,
+    *date_years: int | None,
+    month: int | None = None,
+) -> tuple[str | None, int | None]:
+    """Identify which run of a recurring competition this is.
+
+    `month` refines the key to "2026-09" and should be passed only when the start date is
+    trustworthy — a low-confidence or inferred date would invent a distinction that is
+    not in the document. Without it the key stays at calendar-year granularity, which is
+    what every stored row has; `processing.editions.editions_conflict` treats the coarse
+    key as a prefix of the finer one, so the two remain the same edition.
+    """
     normalized = normalize_title(title)
     year_match = re.search(r"\b(20\d{2})\b", normalized)
     year = int(year_match.group(1)) if year_match else next((y for y in date_years if y), None)
@@ -122,6 +134,8 @@ def extract_edition(title: str | None, *date_years: int | None) -> tuple[str | N
     edition = edition_match.group(1) if edition_match else None
     if year and edition:
         return f"{year}:edition-{edition}", year
+    if year and month:
+        return f"{year}-{month:02d}", year
     if year:
         return str(year), year
     if edition:

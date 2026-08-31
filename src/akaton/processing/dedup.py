@@ -7,6 +7,7 @@ from datetime import timedelta
 from rapidfuzz.fuzz import ratio, token_set_ratio
 
 from akaton.domain.models import EventFacts
+from akaton.processing.editions import EDITION_GAP_DAYS, dates_contradict, editions_conflict
 from akaton.processing.normalize import (
     normalize_organizer,
     normalize_text,
@@ -69,11 +70,20 @@ def compare_events(left: EventFacts, right: EventFacts) -> MatchDecision:
     reasons: list[str] = []
     if left.edition_year and right.edition_year and left.edition_year != right.edition_year:
         return MatchDecision("SEPARATE", 0, ("different edition years",))
-    if left.edition_key and right.edition_key and left.edition_key != right.edition_key:
+    if editions_conflict(left.edition_key, right.edition_key):
         return MatchDecision("SEPARATE", 0, ("different edition keys",))
     for field in ("canonical_url", "registration_url"):
         a, b = getattr(left, field), getattr(right, field)
         if a and b and normalize_url(a) == normalize_url(b):
+            if dates_contradict(left.event_start, right.event_start):
+                # A shared URL is normally conclusive, and for a page that is updated in
+                # place it should be. But organisers reuse a landing page for the next
+                # run, and this rung fires before any date is consulted, so March and
+                # September at the same address merged at 100 and the second run never
+                # alerted. Only two trustworthy starts a run apart override it.
+                return MatchDecision(
+                    "SEPARATE", 0, (f"same {field} but starts over {EDITION_GAP_DAYS} days apart",)
+                )
             return MatchDecision("MERGE", 100, (f"same {field}",))
 
     title_score = ratio(normalize_title(left.title), normalize_title(right.title))
@@ -91,9 +101,7 @@ def compare_events(left: EventFacts, right: EventFacts) -> MatchDecision:
         dates_close = delta <= timedelta(days=14)
         if dates_close:
             reasons.append("event dates within 14 days")
-    edition_compatible = (
-        not (left.edition_key and right.edition_key) or left.edition_key == right.edition_key
-    )
+    edition_compatible = not editions_conflict(left.edition_key, right.edition_key)
     if title_score >= 92 and organizers_match and dates_close and edition_compatible:
         return MatchDecision("MERGE", title_score, tuple(["title similarity >= 92", *reasons]))
     if title_score >= 85 and (organizers_match or dates_close):
