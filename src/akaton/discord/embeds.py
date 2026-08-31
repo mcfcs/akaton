@@ -183,6 +183,7 @@ def build_new_event_payload(
     *,
     discovery_channel: str | None = None,
     source_label: str | None = None,
+    source_url: str | None = None,
     links: list[str] | None = None,
     published: datetime | None = None,
     sources: dict | None = None,
@@ -232,7 +233,10 @@ def build_new_event_payload(
         official_url_clickable=bool(facts.canonical_url)
         and link_trust(facts.canonical_url, sources) is LinkTrust.CLICKABLE,
         source_label=source_label,
-        source_url=facts.canonical_url if social else None,
+        # For a social post the source is the post itself. For a page found by resolving
+        # a mention it is the thread that mentioned it — the caller passes that in, since
+        # the canonical URL here is the official page and is already rendered above.
+        source_url=source_url or (facts.canonical_url if social else None),
         links_field=render_links(links, sources),
         evidence_note=note,
     )

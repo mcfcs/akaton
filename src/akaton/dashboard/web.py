@@ -18,6 +18,7 @@ from akaton.persistence.database import Database
 from akaton.persistence.models import (
     CandidateRow,
     EventRow,
+    LeadRow,
     NotificationRow,
     SearchRunRow,
 )
@@ -80,12 +81,16 @@ def create_dashboard(
             last_search = await session.scalar(
                 select(SearchRunRow).order_by(SearchRunRow.started_at.desc()).limit(1)
             )
+            lead_count = int(await session.scalar(select(func.count(LeadRow.id))) or 0)
         return {
             "counts": {
                 "candidates": candidate_count,
                 "events": event_count,
                 "notifications": notification_count,
             },
+            # A sibling of `counts`, not a member of it: test_dashboard asserts exact dict
+            # equality on that mapping, and a new key inside it would be a silent break.
+            "leads": lead_count,
             "candidate_states": states,
             "last_search": _search_run(last_search),
             "monitor": controller.status(),
@@ -164,6 +169,19 @@ def create_dashboard(
     async def refresh() -> dict[str, object]:
         accepted = controller.trigger("refresh")
         return {"accepted": accepted, "message": _action_message(accepted, "refresh")}
+
+    @app.get("/api/leads", dependencies=secured)
+    async def leads(limit: Annotated[int, Query(ge=1, le=200)] = 40) -> list[dict]:
+        """Competitions named on Facebook or Reddit without a link, and what came of them."""
+        async with database.session() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(LeadRow).order_by(LeadRow.last_seen_at.desc()).limit(limit)
+                    )
+                ).all()
+            )
+        return [_lead(row) for row in rows]
 
     @app.post("/api/actions/backfill", status_code=202, dependencies=secured)
     async def backfill(request: BackfillRequest) -> dict[str, object]:
@@ -267,6 +285,26 @@ def create_dashboard(
         return {"changed": changed, "state": controller.status()["scheduler"]}
 
     return app
+
+
+def _lead(row: LeadRow) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "edition_hint": row.edition_hint,
+        "platform": row.platform,
+        "mention_kind": row.mention_kind,
+        "source_url": row.source_url,
+        "excerpt": row.mention_excerpt,
+        "sightings": row.sightings,
+        "state": row.state,
+        "search_runs": row.search_runs,
+        "resolved_url": row.resolved_url,
+        "event_id": row.event_id,
+        "last_error": row.last_error,
+        "last_searched_at": row.last_searched_at.isoformat() if row.last_searched_at else None,
+        "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+    }
 
 
 def _event(row: EventRow) -> dict:
@@ -402,6 +440,19 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
       <h2 class="mb-2 mt-5 text-base font-semibold">Last run</h2>
       <div id="lastruns" class="space-y-1 text-xs text-emerald-200/70"></div>
     </div>
+  </section>
+
+  <section class="mt-4 rounded-xl border border-edge bg-panel/90 p-5">
+    <div class="flex items-baseline justify-between gap-3">
+      <h2 class="text-base font-semibold">Mentions being chased</h2>
+      <span id="leads-count" class="text-xs text-emerald-200/50"></span>
+    </div>
+    <p class="mb-3 mt-1 text-xs text-emerald-200/50">Competitions someone named on Facebook or Reddit without linking to one. Each costs a single search; repeat mentions raise the sighting count instead of searching again.</p>
+    <div class="overflow-x-auto"><table class="w-full min-w-[820px] text-sm">
+      <thead><tr class="border-b border-edge text-left text-xs uppercase tracking-wide text-emerald-200/50">
+        <th class="pb-2 pr-3">Name</th><th class="pb-2 pr-3">Where</th><th class="pb-2 pr-3">State</th>
+        <th class="pb-2 pr-3 text-right">Seen</th><th class="pb-2">Resolved to</th></tr></thead>
+      <tbody id="leads"></tbody></table></div>
   </section>
 
   <section class="mt-4 rounded-xl border border-edge bg-panel/90 p-5">
@@ -572,6 +623,38 @@ function sendCell(event) {
   return td;
 }
 
+const LEAD_STATE_CLASS = {
+  RESOLVED: 'bg-mint/15 text-mint',
+  UNRESOLVED: 'bg-amber/15 text-amber',
+  DISCARDED: 'bg-white/5 text-emerald-200/50',
+};
+function renderLeads(rows) {
+  const body = $('leads'); body.replaceChildren();
+  $('leads-count').textContent = rows.length ? rows.length + ' tracked' : '';
+  if (!rows.length) {
+    const tr = document.createElement('tr');
+    const td = cell('No mentions recorded yet', 'text-emerald-200/50');
+    td.colSpan = 5; tr.append(td); body.append(tr); return;
+  }
+  for (const lead of rows) {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-edge/50';
+    const name = lead.name + (lead.edition_hint ? ' · ' + lead.edition_hint : '');
+    tr.append(lead.source_url ? link(name, lead.source_url) : cell(name, 'font-semibold'));
+    tr.append(cell(lead.platform + ' · ' + lead.mention_kind, 'text-emerald-200/70'));
+    const state = document.createElement('td');
+    state.className = 'py-2 pr-3 align-top';
+    state.append(chip(lead.state, LEAD_STATE_CLASS[lead.state] || 'bg-white/5 text-emerald-200/70'));
+    if (lead.last_error) { state.append(document.createElement('br'));
+      state.append(chip(lead.last_error.slice(0, 60), 'text-rose/80')); }
+    tr.append(state);
+    tr.append(cell(lead.sightings, 'text-right tabular-nums'));
+    tr.append(lead.resolved_url ? link(lead.resolved_url.replace(/^https?:\/\//, '').slice(0, 60), lead.resolved_url)
+                                : cell('—', 'text-emerald-200/40'));
+    body.append(tr);
+  }
+}
+
 function renderReasons(counts) {
   const box = $('reasons'); box.replaceChildren();
   const entries = Object.entries(counts || {});
@@ -609,9 +692,10 @@ function renderCandidates(rows) {
 async function load() {
   try {
     const candidateUrl = '/api/candidates?limit=60' + (filter ? '&reason=' + encodeURIComponent(filter) : '');
-    const [s, ev, cand, rej, searches] = await Promise.all([
-      api('/api/status'), api('/api/events'), api(candidateUrl), api('/api/rejections'), api('/api/searches')
+    const [s, ev, cand, rej, searches, leads] = await Promise.all([
+      api('/api/status'), api('/api/events'), api(candidateUrl), api('/api/rejections'), api('/api/searches'), api('/api/leads')
     ]);
+    renderLeads(leads);
     $('k-candidates').textContent = s.counts.candidates;
     $('k-events').textContent = s.counts.events;
     $('k-notifications').textContent = s.counts.notifications;

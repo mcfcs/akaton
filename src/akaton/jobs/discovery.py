@@ -3,20 +3,55 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
 from akaton.config import ConfigBundle
 from akaton.discovery.base import SearchProvider, SearchRequest, SourceAdapter
-from akaton.discovery.queries import choose_due_queries, configured_queries, organizer_queries
-from akaton.domain.models import CandidateSeed
+from akaton.discovery.queries import (
+    ScheduledQuery,
+    choose_due_queries,
+    configured_queries,
+    organizer_queries,
+)
+from akaton.discovery.resolver import LeadResolver
+from akaton.domain.models import CandidateSeed, MentionLead
 from akaton.persistence.database import Database
 from akaton.persistence.repository import Repository
 from akaton.pipeline import CandidatePipeline
 from akaton.processing.normalize import normalize_url
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _LeadTask:
+    """One lead due for its search, detached from the session that produced it."""
+
+    lead_id: int
+    mention: MentionLead
+
+
+def _interleave(
+    queries: list[ScheduledQuery], leads: list[_LeadTask]
+) -> list[ScheduledQuery | _LeadTask]:
+    """Round-robin the two kinds of work through one paced loop.
+
+    Not concatenation: putting all the leads first or last would cluster requests of one
+    shape, and a run cut short partway through would systematically starve whichever kind
+    came second.
+    """
+    merged: list[ScheduledQuery | _LeadTask] = []
+    step = max(1, len(queries) // (len(leads) + 1)) if leads else 1
+    remaining = list(leads)
+    for index, query in enumerate(queries):
+        if remaining and index and index % step == 0:
+            merged.append(remaining.pop(0))
+        merged.append(query)
+    merged.extend(remaining)
+    return merged
 
 
 class DiscoveryJob:
@@ -27,12 +62,16 @@ class DiscoveryJob:
         provider: SearchProvider,
         pipeline: CandidatePipeline,
         adapters: list[SourceAdapter] | None = None,
+        resolver: LeadResolver | None = None,
     ) -> None:
         self.database = database
         self.config = config
         self.provider = provider
         self.pipeline = pipeline
         self.adapters = adapters or []
+        # Without a resolver, mentions are still recorded — they are the record of what
+        # the group is talking about — but nothing is searched for them.
+        self.resolver = resolver
 
     async def run(
         self,
@@ -73,64 +112,42 @@ class DiscoveryJob:
             *configured_queries(self.config.queries),
             *organizer_queries(self.config.sources),
         ]
+        # "leads" counts mentions recorded this run; "lead_searches" counts the requests
+        # spent resolving them. They are deliberately separate: a busy week in the group
+        # raises the first without touching the second, which is the whole point.
+        counts = {
+            "queries": 0,
+            "candidates": 0,
+            "processed": 0,
+            "errors": 0,
+            "leads": 0,
+            "lead_searches": 0,
+        }
+
+        # Leads live inside the same allocation as the scheduled queries, not beside it.
+        # `query_count` is fixed before anything runs, and the pause that keeps SearXNG's
+        # engines alive exists only in this one loop — a second sub-loop for leads would
+        # both overshoot the budget and reintroduce the unpaced burst.
+        lead_share = 0
+        if not historical_test and (sources is None or "search" in sources):
+            lead_share = min(self.config.app.mention_leads_per_run, query_count // 3)
+        leads = await self._due_leads(lead_share)
         if sources is not None and "search" not in sources:
             selected = []
         else:
-            selected = choose_due_queries(all_queries, history, query_count, now=now)
-        counts = {"queries": 0, "candidates": 0, "processed": 0, "errors": 0}
+            selected = choose_due_queries(all_queries, history, query_count - len(leads), now=now)
         pause = self.config.app.search_interval_seconds
-        for index, item in enumerate(selected):
+        for index, task in enumerate(_interleave(selected, leads)):
             if index and pause:
                 # Space the queries out. SearXNG scrapes consumer search pages, and a
                 # back-to-back burst gets its engines suspended for the whole run.
                 await asyncio.sleep(pause)
-            query = item.query
-            freshness = item.freshness
-            if since:
-                # Date range is expressed through freshness/time_range, which every engine
-                # understands. An `after:` operator is Google and Brave syntax: Mojeek,
-                # Bing and the rest return nothing for it, so it silently emptied backfill
-                # runs whenever the big engines were throttled. Seeds older than `since`
-                # are filtered out below by published_hint instead.
-                freshness = _freshness_for_since(since, now.date())
-            try:
-                page = await self.provider.search(SearchRequest(query=query, freshness=freshness))
-                error = None
-            except httpx.HTTPStatusError as exc:
-                page = None
-                error = f"HTTP {exc.response.status_code}"
-            except Exception as exc:
-                page = None
-                error = type(exc).__name__
-            if page is not None and not page.results and page.degraded:
-                # Zero results while engines are unavailable is not evidence of absence:
-                # record it so a throttled backend is visible instead of looking like a
-                # quiet week. Engines that answered with nothing are not listed here, so
-                # this names the ones that were actually unreachable.
-                error = "no results; engines unavailable: " + "; ".join(page.unresponsive_engines)
-            async with self.database.session() as session:
-                await Repository(session).record_search_run(
-                    self.provider.name,
-                    f"backfill:{item.group}" if historical_test else item.group,
-                    query,
-                    len(page.results) if page else 0,
-                    error,
+            if isinstance(task, _LeadTask):
+                await self._run_lead(task, counts)
+            else:
+                await self._run_query(
+                    task, counts, since=since, now=now, historical_test=historical_test
                 )
-            counts["queries"] += 1
-            if error:
-                counts["errors"] += 1
-                continue
-            seeds = [
-                seed
-                for seed in page.results
-                if not (since and seed.published_hint and seed.published_hint.date() < since)
-            ]
-            discovered, processed, failed = await self._process_seeds(
-                seeds, historical_test=historical_test
-            )
-            counts["candidates"] += discovered
-            counts["processed"] += processed
-            counts["errors"] += failed
 
         for adapter in self._adapters_for(sources, historical_test=historical_test):
             adapter_settings = self.config.sources.get("structured_sources", {}).get(
@@ -166,6 +183,12 @@ class DiscoveryJob:
                     len(seeds),
                     adapter_error,
                 )
+            # Mentions are recorded whether or not the adapter also produced seeds, and
+            # even on an error: a thread that names a competition is evidence regardless
+            # of whether the rest of the run went well. They are searched in the *next*
+            # run, which is deliberate — the allocation for this one was fixed before the
+            # adapters ran, and spending past it is what the pause exists to prevent.
+            counts["leads"] += await self._record_mentions(adapter)
             if adapter_error:
                 continue
             discovered, processed, failed = await self._process_seeds(seeds)
@@ -173,6 +196,136 @@ class DiscoveryJob:
             counts["processed"] += processed
             counts["errors"] += failed
         return counts
+
+    async def _record_mentions(self, adapter: SourceAdapter) -> int:
+        mentions = list(getattr(adapter, "last_mentions", []) or [])
+        if not mentions:
+            return 0
+        async with self.database.session() as session:
+            repo = Repository(session)
+            for mention in mentions:
+                await repo.record_mention(mention)
+        logger.info("mentions_recorded", extra={"adapter": adapter.name, "mentions": len(mentions)})
+        return len(mentions)
+
+    async def _run_query(
+        self,
+        item: ScheduledQuery,
+        counts: dict[str, int],
+        *,
+        since: date | None,
+        now: datetime,
+        historical_test: bool,
+    ) -> None:
+        query = item.query
+        freshness = item.freshness
+        if since:
+            # Date range is expressed through freshness/time_range, which every engine
+            # understands. An `after:` operator is Google and Brave syntax: Mojeek,
+            # Bing and the rest return nothing for it, so it silently emptied backfill
+            # runs whenever the big engines were throttled. Seeds older than `since`
+            # are filtered out below by published_hint instead.
+            freshness = _freshness_for_since(since, now.date())
+        try:
+            page = await self.provider.search(SearchRequest(query=query, freshness=freshness))
+            error = None
+        except httpx.HTTPStatusError as exc:
+            page = None
+            error = f"HTTP {exc.response.status_code}"
+        except Exception as exc:
+            page = None
+            error = type(exc).__name__
+        if page is not None and not page.results and page.degraded:
+            # Zero results while engines are unavailable is not evidence of absence:
+            # record it so a throttled backend is visible instead of looking like a
+            # quiet week. Engines that answered with nothing are not listed here, so
+            # this names the ones that were actually unreachable.
+            error = "no results; engines unavailable: " + "; ".join(page.unresponsive_engines)
+        async with self.database.session() as session:
+            await Repository(session).record_search_run(
+                self.provider.name,
+                f"backfill:{item.group}" if historical_test else item.group,
+                query,
+                len(page.results) if page else 0,
+                error,
+            )
+        counts["queries"] += 1
+        if error:
+            counts["errors"] += 1
+            return
+        seeds = [
+            seed
+            for seed in page.results
+            if not (since and seed.published_hint and seed.published_hint.date() < since)
+        ]
+        discovered, processed, failed = await self._process_seeds(
+            seeds, historical_test=historical_test
+        )
+        counts["candidates"] += discovered
+        counts["processed"] += processed
+        counts["errors"] += failed
+
+    async def _due_leads(self, limit: int) -> list[_LeadTask]:
+        """Leads worth a search this run, read out of the session before it closes."""
+        if limit <= 0 or self.resolver is None:
+            return []
+        async with self.database.session() as session:
+            rows = await Repository(session).due_leads(limit)
+            return [
+                _LeadTask(
+                    lead_id=row.id,
+                    mention=MentionLead(
+                        name=row.name,
+                        normalized_name=row.normalized_name,
+                        edition_hint=row.edition_hint,
+                        platform=row.platform,
+                        mention_kind=row.mention_kind,
+                        source_url=row.source_url,
+                        source_key=row.source_key,
+                        excerpt=row.mention_excerpt,
+                        # Rebuilt rather than stored: the hint belongs in the query, and
+                        # keeping one canonical way to compose it avoids two of them.
+                        query=" ".join(part for part in (row.name, row.edition_hint) if part),
+                    ),
+                )
+                for row in rows
+            ]
+
+    async def _run_lead(self, task: _LeadTask, counts: dict[str, int]) -> None:
+        """Spend one search on a mention, and put whatever it finds through the pipeline.
+
+        The search is also recorded as a normal search run, so budget accounting and the
+        dashboard's Search-health panel need no special case for leads.
+        """
+        mention = task.mention
+        try:
+            seed, reason = await self.resolver.resolve(mention, task.lead_id)
+            error = None if seed else reason
+        except Exception as exc:
+            seed, error = None, type(exc).__name__
+            logger.exception("lead_resolution_failed", extra={"lead": mention.name})
+        async with self.database.session() as session:
+            repo = Repository(session)
+            await repo.record_search_run(
+                self.provider.name,
+                "mention",
+                self.resolver.query_for(mention),
+                1 if seed else 0,
+                error,
+            )
+            await repo.mark_lead_searched(
+                task.lead_id,
+                resolved_url=str(seed.url) if seed else None,
+                error=error,
+            )
+        counts["queries"] += 1
+        counts["lead_searches"] += 1
+        if not seed:
+            return
+        discovered, processed, failed = await self._process_seeds([seed])
+        counts["candidates"] += discovered
+        counts["processed"] += processed
+        counts["errors"] += failed
 
     def _adapters_for(
         self, sources: Collection[str] | None, *, historical_test: bool

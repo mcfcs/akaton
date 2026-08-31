@@ -39,6 +39,34 @@ class DateFact(BaseModel):
     evidence: str | None = None
 
 
+class MentionLead(BaseModel):
+    """A competition someone named without linking to it.
+
+    Produced by a collector instead of a seed, when the thread turns out to be a
+    question, a teammate search or a post-mortem. The name is what gets searched; the
+    thread itself must never become the candidate, which is the failure this replaces.
+    """
+
+    name: str
+    normalized_name: str
+    edition_hint: str | None = None
+    platform: str
+    mention_kind: str
+    source_url: str
+    source_key: str | None = None
+    excerpt: str | None = None
+    query: str
+
+
+class LeadRef(BaseModel):
+    """Why a seed was looked for, carried alongside where it was found."""
+
+    lead_id: int
+    platform: str
+    source_url: str
+    name: str
+
+
 class CandidateSeed(BaseModel):
     url: HttpUrl
     title: str | None = None
@@ -55,6 +83,11 @@ class CandidateSeed(BaseModel):
     content: str | None = None
     # Outbound links collected with that prefetched body (registration forms, etc.).
     links: list[str] = Field(default_factory=list)
+    # Set when this page was found by resolving a social mention. `discovery_channel`
+    # still describes the *document* — a dict.gov.ph page found through a Facebook
+    # question is an official document, and styling it as a social post would strip its
+    # clickable official link — while this says why we went looking.
+    lead: LeadRef | None = None
 
 
 class FetchAttempt(BaseModel):

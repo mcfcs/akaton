@@ -33,8 +33,9 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from akaton.discovery.shreddit_parse import parse_shreddit_html
-from akaton.domain.models import CandidateSeed
+from akaton.domain.models import CandidateSeed, MentionLead
 from akaton.fetch.proxy import ProxyManager
+from akaton.processing.mentions import build_mention, classify_mention
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ class ShredditSource:
         challenge_wait_seconds: float = 0.0,
         scroll_rounds: int = 8,
         max_posts_per_term: int = 8,
+        vocabulary: frozenset[str] | None = None,
     ) -> None:
         self.proxies = proxies
         self.profile_dir = profile_dir or Path("data/.browser-profile")
@@ -136,11 +138,15 @@ class ShredditSource:
         # See FacebookGroupSource.last_error: an empty list has to be able to mean either
         # "nothing was posted" or "the collector never got off the ground".
         self.last_error: str | None = None
+        # See FacebookGroupSource.last_mentions.
+        self.last_mentions: list[MentionLead] = []
+        self.vocabulary = vocabulary or frozenset()
 
     async def discover(
         self, since: datetime | None = None, cursor: str | None = None
     ) -> list[CandidateSeed]:
         self.last_error = None
+        self.last_mentions = []
         try:
             from patchright.async_api import async_playwright
         except ImportError:
@@ -172,6 +178,14 @@ class ShredditSource:
                             await self._throttle()
                             record = await session.post_record(permalink, subreddit)
                             if not record or not matches_terms(record, self.terms):
+                                continue
+                            mention = _to_mention(record, self.name, self.vocabulary)
+                            if mention:
+                                # A net saving, not just a new feature: this thread would
+                                # otherwise become a candidate that spends a fetch and a
+                                # fourteen-second model call before the verifier rejects
+                                # it for being a question. One cheap search replaces that.
+                                self.last_mentions.append(mention)
                                 continue
                             seed = _to_seed(record, cutoff, self.name)
                             if seed:
@@ -379,6 +393,33 @@ def _submissions(html: str, subreddit: str) -> list[dict]:
         logger.exception("shreddit_parse_failed", extra={"subreddit": subreddit})
         return []
     return submissions
+
+
+def _to_mention(record: dict, provider: str, vocabulary: frozenset[str]) -> MentionLead | None:
+    """A lead if this thread talks about a competition rather than announcing one.
+
+    The gate lives in `discover()` rather than in `_to_seed` on purpose: the tests call
+    `_to_seed` directly to pin the seed shape, and a gate inside it would change what
+    those tests are testing.
+    """
+    permalink = record.get("permalink") or ""
+    if permalink.startswith("/"):
+        permalink = f"{BASE}{permalink}"
+    body = "\n".join(
+        part for part in (record.get("title") or "", record.get("selftext") or "") if part
+    ).strip()
+    if not body:
+        return None
+    link = record.get("url") or ""
+    urls = [link] if link and "reddit.com" not in link else []
+    return build_mention(
+        body,
+        kind=classify_mention(body, urls),
+        platform=provider,
+        source_url=permalink or link,
+        source_key=record.get("name"),
+        vocabulary=vocabulary,
+    )
 
 
 def _to_seed(record: dict, cutoff: datetime, provider: str) -> CandidateSeed | None:

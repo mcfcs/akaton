@@ -97,6 +97,22 @@ OPAQUE_HOSTS = {
     "www.tiktok.com",
 }
 
+# Hosts whose own page is worth fetching when a social thread links to one. Anything
+# else stays on the social document, with the outbound URL kept as a registration link:
+# an unlisted site scores 50 and the verifier drops it as LOW_AUTHORITY, so following it
+# would spend a fetch to arrive at a rejection.
+FOLLOW_HOST_SUFFIXES = {
+    "devpost.com",
+    "unstop.com",
+    "eventbrite.com",
+    "lu.ma",
+    "luma.com",
+    "hackathons.ph",
+    "kaggle.com",
+    "gov.ph",
+    "edu.ph",
+}
+
 TRUSTED_AUTHORITY = 60
 
 
@@ -110,6 +126,18 @@ def _matches(host: str, hosts: set[str]) -> bool:
 
 def is_shortener(url: str) -> bool:
     return _matches(host_of(url), SHORTENER_HOSTS)
+
+
+def should_follow_url(url: str) -> bool:
+    """Whether a link out of a social thread is worth fetching as the event page."""
+    host = host_of(url)
+    return bool(host) and _matches(host, FOLLOW_HOST_SUFFIXES)
+
+
+def is_form_url(url: str) -> bool:
+    """A registration form on a reputable form host, which is not itself the event page."""
+    host = host_of(url)
+    return bool(host) and _matches(host, FORM_HOSTS)
 
 
 def _is_facebook(host: str) -> bool:

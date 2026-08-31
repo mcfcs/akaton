@@ -18,6 +18,7 @@ from akaton.discovery.adapters import DevpostAdapter, KaggleAdapter
 from akaton.discovery.brave import BraveSearchProvider
 from akaton.discovery.facebook import FacebookGroupSource
 from akaton.discovery.facebook_parse import groups_from_config
+from akaton.discovery.resolver import LeadResolver
 from akaton.discovery.searxng import SearXNGSearchProvider
 from akaton.discovery.shreddit import DEFAULT_SUBREDDITS, DEFAULT_TERMS, ShredditSource
 from akaton.fetch.browser import PatchrightRenderer
@@ -31,6 +32,7 @@ from akaton.jobs.refresh import RefreshJob
 from akaton.observability import configure_logging
 from akaton.persistence.database import Database, upgrade_database
 from akaton.pipeline import CandidatePipeline
+from akaton.processing.authority import organizer_vocabulary
 from akaton.processing.llm import OllamaLLMProvider, OpenAILLMProvider
 
 
@@ -72,6 +74,9 @@ def _search_provider(config: ConfigBundle):
 
 def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
     structured = config.sources.get("structured_sources", {})
+    # Organizer aliases from config/sources.yaml, so name extraction recognises "DICT"
+    # and "GCash" as the identifying part of a name someone typed into a group post.
+    vocabulary = organizer_vocabulary(config.sources)
     adapters = []
     if structured.get("devpost", {}).get("enabled", True):
         adapters.append(DevpostAdapter(fetcher))
@@ -89,6 +94,7 @@ def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
                 max_age_days=int(reddit.get("max_age_days", 90)),
                 challenge_wait_seconds=float(reddit.get("challenge_wait_seconds", 0)),
                 max_posts_per_term=int(reddit.get("max_posts_per_term", 5)),
+                vocabulary=vocabulary,
             )
         )
     facebook = structured.get("facebook", {})
@@ -107,6 +113,7 @@ def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
                 max_permalinks=int(facebook.get("max_permalinks", 25)),
                 email=config.runtime.facebook_email,
                 password=config.runtime.facebook_password,
+                vocabulary=vocabulary,
             )
         )
     return adapters
@@ -125,7 +132,12 @@ def _monitor_jobs(
 ):
     provider = _search_provider(config)
     discovery = DiscoveryJob(
-        database, config, provider, pipeline, _source_adapters(config, fetcher)
+        database,
+        config,
+        provider,
+        pipeline,
+        _source_adapters(config, fetcher),
+        resolver=LeadResolver(provider, config.sources),
     )
     refresh = RefreshJob(database, pipeline)
     maintenance = MaintenanceJob(database, config.app.snapshot_retention_days)

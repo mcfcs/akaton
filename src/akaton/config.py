@@ -46,6 +46,10 @@ class AppSettings(BaseModel):
     llm_concurrency: int = Field(default=1, ge=1, le=8)
     search_interval_seconds: float = Field(default=6.0, ge=0, le=300)
     monthly_search_budget: int = Field(default=2000, ge=1)
+    # Searches a run may spend resolving social mentions. Taken out of the run's own
+    # allocation, never added to it, and capped at a third of it so the scheduled
+    # rotation is never crowded out by a busy week in the group.
+    mention_leads_per_run: int = Field(default=3, ge=0)
     refresh_interval_hours: int = Field(default=24, ge=1)
     notification_threshold: int = Field(default=65, ge=0, le=100)
     high_priority_threshold: int = Field(default=80, ge=0, le=100)

@@ -5,8 +5,8 @@ one was given at the time. Replaying it is how filtering changes get measured ag
 real noise instead of against invented fixtures.
 
     $env:PYTHONPATH='src'
-    python tools/facebook_replay.py            # kind histogram, before vs after
-    python tools/facebook_replay.py --verbose  # per-post detail for anything reclassified
+    python tools/facebook_replay.py            # kind histogram, and the leads it produces
+    python tools/facebook_replay.py --verbose  # per-post detail, and each lead's excerpt
 """
 
 from __future__ import annotations
@@ -20,7 +20,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from akaton.config import load_config  # noqa: E402
 from akaton.discovery.facebook_parse import clean_facebook_text, mention_kind  # noqa: E402
+from akaton.processing.authority import organizer_vocabulary  # noqa: E402
+from akaton.processing.leads import lead_key  # noqa: E402
+from akaton.processing.mentions import LEAD_KINDS, build_mention  # noqa: E402
 
 DUMP = ROOT / "data" / "facebook-backfill.json"
 
@@ -77,6 +81,7 @@ def main() -> int:
         print(f"  reply {kind:15} {comment_before.get(kind, 0):>7} {comment_after.get(kind, 0):>7}")
 
     print(f"\nposts that would alert: {before.get('event', 0)} -> {after.get('event', 0)}")
+    _report_leads(posts, verbose=args.verbose)
     if changed:
         print(f"\nreclassified ({len(changed)}):")
         for was, now, text in changed:
@@ -84,6 +89,54 @@ def main() -> int:
             if args.verbose:
                 print()
     return 0
+
+
+def _report_leads(posts: list[dict], *, verbose: bool) -> None:
+    """What this scrape would put in the leads table, and what it would cost.
+
+    A lead is one search, however many people asked. The distinct count is the number of
+    requests the run would spend; the sighting counts show what the deduplication saved.
+    """
+    vocabulary = organizer_vocabulary(load_config(ROOT).sources)
+    leads: dict[str, dict] = {}
+    unnamed = 0
+    for post in posts:
+        parts = [(post.get("text") or "", post.get("urls") or [], "post")]
+        parts += [
+            (comment.get("text") or "", comment.get("urls") or [], "reply")
+            for comment in post.get("comments", [])
+        ]
+        for text, urls, where in parts:
+            body = clean_facebook_text(text)
+            kind = mention_kind(body, urls)
+            if kind not in LEAD_KINDS:
+                continue
+            mention = build_mention(
+                body,
+                kind=kind,
+                platform="facebook",
+                source_url=post.get("permalink") or "",
+                vocabulary=vocabulary,
+            )
+            if not mention:
+                unnamed += 1
+                continue
+            key = lead_key(mention.normalized_name, mention.edition_hint)
+            entry = leads.setdefault(
+                key, {"mention": mention, "sightings": 0, "where": collections.Counter()}
+            )
+            entry["sightings"] += 1
+            entry["where"][where] += 1
+
+    sightings = sum(entry["sightings"] for entry in leads.values())
+    print(f"\nleads: {len(leads)} distinct, {sightings} sightings")
+    print(f"       {unnamed} mentions named nothing searchable and cost nothing")
+    for entry in sorted(leads.values(), key=lambda e: -e["sightings"]):
+        mention = entry["mention"]
+        where = ", ".join(f"{count} {name}" for name, count in entry["where"].most_common())
+        print(f"  {entry['sightings']}x  {mention.query!r:<40} ({where})")
+        if verbose:
+            print(f"       {mention.excerpt[:96]}")
 
 
 if __name__ == "__main__":

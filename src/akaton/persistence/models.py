@@ -200,4 +200,46 @@ class ProxyHealthRow(Base):
     disabled_reason: Mapped[str | None] = mapped_column(Text)
 
 
+class LeadRow(Base):
+    """A competition someone mentioned without linking to it.
+
+    A question, a teammate search or a complaint names a competition that exists but is
+    not announced in the thread. The name is worth one search; the answer is a real page
+    that goes through the normal pipeline. This row is what remembers that we already
+    looked, so twenty people asking about eGovPH cost one search rather than twenty.
+
+    A `SearchRunRow` alone would have been cheaper — it already carries budget accounting
+    and a timestamp — but it cannot say which post a lead came from or whether it ever
+    resolved, and both are things an operator needs to see. So the lead is a row and the
+    search it triggers is *also* recorded as a search run, leaving budget accounting and
+    the Search-health panel untouched.
+    """
+
+    __tablename__ = "leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # sha256 of the normalized name and the edition hint. The hint is in the key on
+    # purpose: "the eGov hackathon" and "eGov hackathon September" are different leads,
+    # so a new edition is searched at once instead of waiting out the previous cooldown.
+    lead_key: Mapped[str] = mapped_column(String(64), unique=True)
+    name: Mapped[str] = mapped_column(Text)
+    normalized_name: Mapped[str] = mapped_column(String(255), index=True)
+    edition_hint: Mapped[str | None] = mapped_column(String(64))
+    platform: Mapped[str] = mapped_column(String(32))
+    mention_kind: Mapped[str] = mapped_column(String(32))
+    source_url: Mapped[str] = mapped_column(Text)
+    source_key: Mapped[str | None] = mapped_column(String(128))
+    mention_excerpt: Mapped[str | None] = mapped_column(Text)
+    sightings: Mapped[int] = mapped_column(Integer, default=1)
+    state: Mapped[str] = mapped_column(String(32), default="NEW", index=True)
+    search_runs: Mapped[int] = mapped_column(Integer, default=0)
+    resolved_url: Mapped[str | None] = mapped_column(Text)
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id"))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_searched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 Index("ix_events_series_edition", EventRow.series_key, EventRow.edition_key)
+Index("ix_leads_state_searched", LeadRow.state, LeadRow.last_searched_at)

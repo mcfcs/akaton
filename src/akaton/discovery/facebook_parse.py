@@ -25,16 +25,9 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from akaton.domain.models import CandidateSeed
-from akaton.processing.classifier import (
-    ACTION_TERMS,
-    COMPETITION_TERMS,
-    RECAP_TERMS,
-    RESULT_TERMS,
-    classify_category,
-)
-from akaton.processing.links import FORM_HOSTS
-from akaton.processing.locale import detect_country
+from akaton.domain.models import CandidateSeed, MentionLead
+from akaton.processing.links import should_follow_url
+from akaton.processing.mentions import build_mention, classify_mention
 from akaton.processing.normalize import fold_text
 
 FACEBOOK_HOSTS = {
@@ -63,24 +56,8 @@ SKIP_HOSTS = FACEBOOK_HOSTS | {
     "messenger.com",
     "www.messenger.com",
 }
-# Hosts whose own page is worth fetching. Anything else stays on the Facebook
-# document (authority 75) with the outbound URL kept as a registration link,
-# because an unlisted site scores 50 and the verifier drops it as LOW_AUTHORITY.
-FOLLOW_HOST_SUFFIXES = (
-    "devpost.com",
-    "unstop.com",
-    "eventbrite.com",
-    "lu.ma",
-    "luma.com",
-    "hackathons.ph",
-    "kaggle.com",
-    "gov.ph",
-    "edu.ph",
-)
 LINK_RE = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
 TRAILING_PUNCT_RE = re.compile(r"[),.]+$")
-YEAR_RE = re.compile(r"\b20\d{2}\b")
-NAMED_HACK_RE = re.compile(r"\bhack(?:athon|[a-z]*\d|\s*\d)", re.IGNORECASE)
 RELATIVE_TIME_RE = re.compile(r"^\d+\s*[smhdwy]$", re.IGNORECASE)
 POST_ID_RE = re.compile(
     r"/(?:permalink|posts|videos|reel)/(\d{5,})|"
@@ -90,85 +67,6 @@ POST_ID_RE = re.compile(
 COMMENT_ID_RE = re.compile(r"[?&]comment_id=(\d{5,}|fb_[0-9a-f]{8,})", re.IGNORECASE)
 GROUP_SLUG_RE = re.compile(r"facebook\.com/groups/([^/?#]+)", re.IGNORECASE)
 
-# Defined in processing.classifier so the relevance gate shares one vocabulary.
-ACTION_HINTS = ACTION_TERMS + (
-    "register",
-    "registration",
-    "applications open",
-    "application deadline",
-    "apply now",
-    "sign up",
-    "deadline",
-    "prize",
-    "prizes",
-    "stipend",
-    "now open",
-    "open for",
-    "submission",
-    "submissions",
-)
-QUESTION_HINTS = (
-    "is there any",
-    "are there any",
-    "any upcoming",
-    "anyone know",
-    "know any",
-    "recommend a",
-    "looking for upcoming",
-    "looking for hackathons",
-    "looking for competitions",
-    "saan may",
-    "may hackathon ba",
-    "may competition ba",
-    "meron bang",
-    # Taglish interrogatives. "po" marks a polite question and rarely appears in an
-    # announcement, which is what makes these safe as standalone signals.
-    "pwede po ba",
-    "pwede ba",
-    "meron po ba",
-    "ano po",
-    "paano po",
-    "saan po",
-    "kailan po",
-    "sino po",
-    "tanong lang",
-    "ask lang",
-    "pahelp",
-    "help po",
-    "may alam ba",
-    "may alam po",
-)
-TEAMMATE_HINTS = (
-    "looking for teammate",
-    "looking for teammates",
-    "looking for team",
-    "need teammates",
-    "need members",
-    "need a teammate",
-    "slot available",
-    "anyone joining",
-    "hanap team",
-    "hanap teammate",
-    "looking for members",
-)
-JOB_HINTS = (
-    "we are hiring",
-    "job opening",
-    "we're hiring",
-    "apply for this role",
-    "internship opening",
-    # An internship call reads like a competition announcement — "turn bold ideas into
-    # reality", a deadline, student eligibility — but there is nothing to compete in.
-    "internship-eligible",
-    "internship program",
-    "internship programme",
-    "internship opportunity",
-    "summer internship",
-    "on-the-job training",
-    "ojt",
-    "now hiring",
-    "career opportunity",
-)
 # Meta's own account and security notices render into `[role="article"]` elements that
 # look exactly like comments to the DOM scraper. A real run captured "You're now using a
 # Meta Account on Facebook." and "We noticed a new login from a device or location you
@@ -349,25 +247,12 @@ def outbound_urls(urls: Iterable[str]) -> list[str]:
     return outbound
 
 
-def should_follow_url(url: str) -> bool:
-    host = host_of(url)
-    if not host:
-        return False
-    return any(host == suffix or host.endswith(f".{suffix}") for suffix in FOLLOW_HOST_SUFFIXES)
-
-
-def is_form_url(url: str) -> bool:
-    """A registration form on a reputable form host, which is not itself the event page."""
-    host = host_of(url)
-    return bool(host) and any(host == entry or host.endswith(f".{entry}") for entry in FORM_HOSTS)
-
-
 def clean_facebook_text(text: str, *, author: str | None = None) -> str:
     """Strip Facebook chrome and fold styled characters onto ASCII.
 
     Every post and comment body passes through here before `mention_kind`, `_assemble`
     and `_title_from`, so folding once at this point is what lets the shared classifier
-    read a post written as 𝗥𝗘𝗚𝗜𝗦𝗧𝗥𝗔𝗧𝗜𝗢𝗡 𝗜𝗦 𝗡𝗢𝗪 𝗢𝗣𝗘𝗡.
+    read a post written as ð—¥ð—˜ð—šð—œð—¦ð—§ð—¥ð—”ð—§ð—œð—¢ð—¡ ð—œð—¦ ð—¡ð—¢ð—ª ð—¢ð—£ð—˜ð—¡.
     """
     lines: list[str] = []
     author_key = (author or "").casefold()
@@ -415,124 +300,58 @@ def parse_facebook_time(value: Any, *, now: datetime | None = None) -> datetime 
     return None
 
 
-def _has_any(haystack: str, terms: tuple[str, ...]) -> bool:
-    return any(term in haystack for term in terms)
+def thread_to_mentions(
+    post: FacebookPost,
+    *,
+    cutoff: datetime | None = None,
+    vocabulary: frozenset[str] = frozenset(),
+) -> list[MentionLead]:
+    """Leads from a thread that talks about a competition without announcing one.
 
-
-def has_competition_term(text: str) -> bool:
-    lowered = text.casefold()
-    if _has_any(lowered, COMPETITION_TERMS) or NAMED_HACK_RE.search(lowered):
-        return True
-    return classify_category(text).value != "UNKNOWN"
-
-
-def _is_question(body: str, lowered: str, *, category: bool) -> bool:
-    """True when the thread is asking about a competition rather than announcing one.
-
-    Checking only the last character missed the real case, whose question is on the
-    first line and whose last line is a follow-up remark:
-
-        pwede po ba manuod if hindi naka register sa egov hackaton?
-        - pwede pasabit kung may available teams pa ( first timer)
+    These are the posts `thread_to_seeds` drops on the floor: a question, a teammate
+    search, a post-mortem. Each names something real, and the name is worth one search.
+    The thread itself never becomes the candidate — that is the mistake this replaces.
     """
-    if _has_any(lowered, QUESTION_HINTS):
-        return True
-    if len(body) > 400:
-        return False
-    if "?" not in body:
-        return False
-    # An announcement can open with a rhetorical question — "Have you got a bold idea?" —
-    # but it goes on to say what to do about it. The absence of a call to action is what
-    # separates someone asking from someone announcing. A link does not settle it: a
-    # question can carry the very listing it is asking about.
-    return category and not _has_any(lowered, ACTION_TERMS)
+    if post.created_at and cutoff and post.created_at < cutoff:
+        return []
+    mentions: list[MentionLead] = []
+    parts = [(post.text, post.urls, post.permalink, f"fb:{post.group}:{post.post_id}")]
+    for comment in post.comments:
+        comment_id = comment.comment_id or _synthetic_comment_id(comment.text)
+        parts.append(
+            (
+                comment.text,
+                comment.urls,
+                comment.permalink or post.permalink,
+                f"fb:{post.group}:{post.post_id}:{comment_id}",
+            )
+        )
+    for text, urls, source_url, source_key in parts:
+        body = clean_facebook_text(text)
+        mention = build_mention(
+            body,
+            kind=mention_kind(body, urls),
+            platform="facebook",
+            source_url=source_url,
+            source_key=source_key,
+            vocabulary=vocabulary,
+        )
+        if mention:
+            mentions.append(mention)
+    return mentions
 
 
 def mention_kind(text: str, urls: Iterable[str] | None = None) -> str:
-    """Classify one post or reply as event, question, teammate, recap, job, or unrelated.
+    """Classify one Facebook post or reply.
 
-    The page classifier treats any occurrence of "hackathon" as an announcement.
-    That is wrong for a group where people ask "any upcoming hackathon near Manila?"
-    and someone else drops the real listing in a reply.
+    Facebook's half of the job: strip its chrome, fold its styled Unicode, and apply its
+    `/events/` carve-out to the link list. The judgement itself is shared with Reddit and
+    lives in `processing.mentions`.
     """
     body = clean_facebook_text(text)
     if not body:
         return "unrelated"
-    lowered = body.casefold()
-    event_urls = outbound_urls(urls or extract_urls(body))
-    # Host allowlist only. `is_registration_url` matches a `/register` path on any host,
-    # so including it here let a spam reply's link make a thread look like an event.
-    followable = [url for url in event_urls if should_follow_url(url)]
-    # A form link does not decide where the candidate points — the form is not the event
-    # page — but it is strong evidence the thread is a real call for entries.
-    has_form_link = any(is_form_url(url) for url in event_urls)
-    if _has_any(lowered, RESULT_TERMS + RECAP_TERMS):
-        return "recap"
-    if _has_any(lowered, JOB_HINTS):
-        return "job"
-    # The group carries reposts from the wider region. A Malaysian call for entries is
-    # not something a Philippine participant can enter, and screening it here saves a
-    # pipeline run and an extraction.
-    country = detect_country(body)
-    if country and country != "PH":
-        return "foreign"
-
-    category = has_competition_term(body)
-    action = _has_any(lowered, ACTION_HINTS)
-    dated = bool(YEAR_RE.search(body))
-    teammate = _has_any(lowered, TEAMMATE_HINTS)
-    question = _is_question(body, lowered, category=category)
-
-    if teammate:
-        return "teammate"
-    # A question that happens to contain "register" is still a question:
-    # "pwede po ba manuod if hindi naka register sa egov hackaton?"
-    if question:
-        # A question carrying a real listing is still worth the listing. The thread
-        # itself never becomes the candidate; only the page it points at does.
-        return "question_with_link" if followable else "question"
-    if _is_talk_not_competition(lowered):
-        return "unrelated"
-    if followable or (has_form_link and category):
-        return "event"
-    if category and action:
-        return "event"
-    # In a competition group, "X 2026 registration is now open" is the event even
-    # when the name does not contain the word "hackathon" (Hack4Gov, Code League).
-    if action and dated:
-        return "event"
-    if category and dated:
-        return "event"
-    return "unrelated"
-
-
-def _is_talk_not_competition(lowered: str) -> bool:
-    event_words = (
-        "hackathon",
-        "hackaton",
-        "case competition",
-        "ideathon",
-        "datathon",
-        "codefest",
-    )
-    talk_words = (
-        "conference",
-        "webinar",
-        "summit",
-        "symposium",
-        "convention",
-        "congress",
-        "seminar",
-        "masterclass",
-        "bootcamp",
-        "call for papers",
-        "call for abstracts",
-    )
-    # A talk that names an actual competition format is a competition with a talk
-    # attached; a talk that merely says "conference" is not.
-    if any(term in lowered for term in event_words):
-        return False
-    return any(term in lowered for term in talk_words)
+    return classify_mention(body, outbound_urls(urls or extract_urls(body)))
 
 
 def needs_comment_expansion(post: FacebookPost) -> bool:

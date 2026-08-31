@@ -247,6 +247,10 @@ class CandidatePipeline:
                     if verification.rejection_codes
                     else CandidateState.AMBIGUOUS
                 )
+                if seed.lead:
+                    # We found a page and it was not for us. DISCARDED rather than
+                    # UNRESOLVED so the dashboard tells that apart from never finding one.
+                    await repo.attach_lead_event(seed.lead.lead_id, None, kept=False)
                 await repo.transition_candidate(
                     candidate,
                     state,
@@ -327,6 +331,10 @@ class CandidatePipeline:
                     candidate, CandidateState.EVENT_MATCHED, detail={"event_id": event.id}
                 )
             candidate.event_id = event.id
+            if seed.lead:
+                # Close the loop, so the dashboard can show which mention produced which
+                # event rather than a list of names with no outcome attached.
+                await repo.attach_lead_event(seed.lead.lead_id, event.id, kept=True)
 
             threshold = int(self.config.scoring.get("thresholds", {}).get("recommended", 65))
             notify_changes = [] if is_new else [change for change in changes if change.notify]
@@ -363,6 +371,7 @@ class CandidatePipeline:
                     extraction.overall_confidence,
                     discovery_channel=seed.discovery_channel,
                     source_label=_source_label(seed),
+                    source_url=seed.lead.source_url if seed.lead else None,
                     links=list(fetch.links or []),
                     published=seed.published_hint,
                     sources=self.config.sources,
@@ -445,12 +454,21 @@ class CandidatePipeline:
         return PipelineOutcome(candidate_id, CandidateState.NOTIFIED.value, payload.event_id)
 
 
+PLATFORM_NAMES = {"facebook": "Facebook", "reddit": "Reddit", "shreddit": "Reddit"}
+
+
 def _source_label(seed: CandidateSeed) -> str | None:
     """Name the place an alert came from, so a group post never reads as an official page."""
     if seed.discovery_channel == "facebook":
         return f"Facebook group · {seed.query}" if seed.query else "Facebook group post"
     if seed.discovery_channel == "reddit":
         return f"Reddit · {seed.query}" if seed.query else "Reddit post"
+    if seed.lead:
+        # An official page found by resolving a social mention. The document is what it
+        # is — it keeps its own channel and its clickable official link — but the reader
+        # should still know why it turned up, and where the mention was.
+        platform = PLATFORM_NAMES.get(seed.lead.platform, seed.lead.platform.title())
+        return f"Found via a {platform} mention"
     return None
 
 

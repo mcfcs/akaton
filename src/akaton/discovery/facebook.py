@@ -44,9 +44,10 @@ from akaton.discovery.facebook_parse import (
     post_from_dom,
     records_from_graphql,
     records_from_html,
+    thread_to_mentions,
     thread_to_seeds,
 )
-from akaton.domain.models import CandidateSeed
+from akaton.domain.models import CandidateSeed, MentionLead
 from akaton.fetch.proxy import ProxyManager
 from akaton.processing.dedup import content_prefix_hash
 
@@ -214,6 +215,7 @@ class FacebookGroupSource:
         use_proxy: bool = False,
         email: str | None = None,
         password: str | None = None,
+        vocabulary: frozenset[str] | None = None,
     ) -> None:
         self.proxies = proxies
         self.profile_dir = profile_dir or Path("data/.facebook-profile")
@@ -236,11 +238,17 @@ class FacebookGroupSource:
         # A collector that never ran returns an empty list exactly like a quiet week does,
         # so without this a broken login is invisible until someone notices the silence.
         self.last_error: str | None = None
+        # Competitions named in threads that announce nothing — a question, a teammate
+        # search, a post-mortem. DiscoveryJob reads these after the run and searches for
+        # the pages they refer to, rather than making the thread itself a candidate.
+        self.last_mentions: list[MentionLead] = []
+        self.vocabulary = vocabulary or frozenset()
 
     async def discover(
         self, since: datetime | None = None, cursor: str | None = None
     ) -> list[CandidateSeed]:
         self.last_error = None
+        self.last_mentions = []
         try:
             from patchright.async_api import async_playwright
         except ImportError:
@@ -275,6 +283,9 @@ class FacebookGroupSource:
                             post = await session.expand_thread(post)
                             permalinks_used += 1
                         self.last_posts.append(post)
+                        self.last_mentions.extend(
+                            thread_to_mentions(post, cutoff=cutoff, vocabulary=self.vocabulary)
+                        )
                         for seed in thread_to_seeds(
                             post,
                             cutoff=cutoff,

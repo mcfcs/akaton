@@ -235,6 +235,73 @@ The default LLM fallback is the Ollama service at `100.102.10.69`, using the ins
 `qwen2.5vl:7b` model. Akaton invokes it only when deterministic extraction is ambiguous. Set
 `LLM_PROVIDER=disabled` to use deterministic extraction exclusively.
 
+### Mentions: when a post names a competition without linking to it
+
+Most competition talk in a group is not an announcement. Someone asks whether one is coming up,
+looks for teammates for one they already joined, or complains about one that has ended. Replaying
+the recorded philhacks scrape, 15 of the mentions are that shape and only 8 posts are actual
+announcements.
+
+That evidence used to be thrown away on Facebook, and on Reddit it was worse: the question became
+a candidate, spending a fetch and a fourteen-second model call before the verifier rejected it for
+being a question. Neither found the competition it was talking about.
+
+A **lead** is the third option. The name is lifted out of the text, one search finds the official
+page, and *that page* goes through the normal pipeline — so it alerts only if it would have alerted
+had it been found directly. The thread never becomes the candidate.
+
+```
+"pwede po ba manuod if hindi naka register sa egov hackaton?"
+  -> lead "egov hackathon"          (question, philhacks)
+  -> search "egov hackathon Philippines"
+  -> https://dict.gov.ph/...        (authority 90, ranked above the news coverage)
+  -> normal pipeline, alert labelled "Found via a Facebook mention"
+```
+
+**Naming is deterministic** — `processing/mentions.py`, no model. It anchors on a head term and
+walks left over qualifying tokens, stopping at punctuation or a stopword; the stopword list carries
+Tagalog function words (`sa ng na po ba may yung mga`) beside the English determiners, because the
+posts are Taglish. A bare head is refused: "any upcoming hackathon events near manila" yields
+nothing, because a lead there would spend a search request on the word "hackathon". At fourteen
+seconds a call with `llm_concurrency: 1`, classifying a sixty-post run with the model would be
+fourteen minutes of serialised time to decide what a regex settles.
+
+**Repeat mentions cost nothing.** The lead is keyed on the folded name, so the three separate
+philhacks posts about eGovPH — one of them spelling it "hackaton" — are one lead with three
+sightings and one search. The canonical spelling is what gets searched, not whichever misspelling
+arrived first.
+
+**A new edition is still a new search.** Any year or month written within 40 characters of the name
+goes into the key, so "the eGov hackathon" and "eGov hackathon September" are *different* leads and
+the September one is searched at once rather than waiting out the first one's 30-day cooldown. A
+September mention carrying no date at all does collapse onto the earlier lead — nothing in the text
+distinguishes them, and the scheduled queries still cover the event.
+
+**Ranking is by authority, not by position**, and that was decided by running the real queries:
+
+| query | first result | what the resolver picks |
+| --- | --- | --- |
+| `ImaGnation Philippines` | `gcash.com/imagnation` | the same — already right |
+| `Hack4Gov Philippines` | news coverage, authority 50 | `pia.gov.ph`, authority 85 |
+| `eGov hackathon Philippines` | led by yugatech, mb.com.ph, inquirer | `dict.gov.ph`, authority 90 |
+
+Taking the first result would have resolved two of those three to a page the verifier then rejects
+as `LOW_AUTHORITY`, having already spent the fetch. Results on the social platforms are dropped
+outright — one live hit was literally *"Questions about Hack4gov competition : r/PinoyProgrammer"*,
+which is resolving a mention to another mention. Authority alone is not enough either: the same
+search returned `elibrary.judiciary.gov.ph` at authority 85 purely for being under `gov.ph`, so the
+name has to actually appear in the result.
+
+**Budget.** Leads come out of the run's own allocation, never in addition to it, capped at
+`mention_leads_per_run` (default 3) and at a third of the run. They are round-robined through the
+same paced loop as the scheduled queries, so every request still gets its `search_interval_seconds`
+gap — a second sub-loop would reintroduce the burst that gets SearXNG's engines suspended. A lead
+found in one run is searched in the next, because this run's allocation was fixed before the
+collectors produced it.
+
+Leads and their outcomes are listed on the dashboard, and each search is also recorded as a normal
+search run, so budget accounting and the Search-health panel need no special case.
+
 ### What the LLM is for, and whether you need it
 
 Deterministic extraction handles a page with regexes and keyword lists. `should_use_llm` sends a
@@ -375,6 +442,8 @@ The dashboard polls the local database and shows:
 - candidate, event, and notification totals;
 - pipeline-state counts and the last search query;
 - recent accepted events, scores, deadlines, and source links;
+- mentions being chased: competitions named on Facebook or Reddit without a link, their sighting
+  counts, and whether each resolved to a page;
 - recent candidates, providers, rejection codes, retry state, and last pipeline transition.
 
 Controls trigger one discovery run, refresh known events, start or stop the Discord bot, send an
@@ -441,7 +510,35 @@ access controls.
 
 The default database is `data/akaton.db`. A candidate retains its pipeline trace and rejection
 codes. Accepted events have immutable versions, linked source snapshots, material change records,
-and stable annual-edition keys. A unique notification key prevents repeated new-event alerts.
+and stable edition keys. A unique notification key prevents repeated new-event alerts.
+
+### Telling one run of a competition from the next
+
+An edition key is `2026`, or `2026-09` when the start date is trustworthy — the same test
+`verifier.deadline_past` applies before it will call a deadline expired. Everything downstream asks
+whether two keys *positively disagree*, never whether they differ: `2026` is the same edition as
+`2026-03` seen more precisely, and a raw `!=` would have split every stored row from its own next
+update the moment that update parsed a month. That prefix tolerance is the whole compatibility
+story, so the migration backfills nothing and old rows behave as they do today until refreshed.
+
+This matters because three of the four shapes were failing, silently and in both directions:
+
+| | before | now |
+| --- | --- | --- |
+| September reuses the March landing page | merged at 100 on URL identity — the second run never alerted | separate |
+| 92-day gap, same organiser, new URL | `POSSIBLE_DUPLICATE`: no event, no alert, scan abandoned | separate |
+| September page with no parsed date | same silent death | merged, conservatively |
+| 184-day gap, different URL | separate | separate |
+
+Reusing a landing page for the next run is what government and university sites do as a matter of
+course, so the first row was the common case, not an edge case. Where a key cannot settle it, two
+trustworthy starts more than 45 days apart do — *both* sides must be trustworthy, because a
+Facebook announcement usually carries a deadline and no start at all, and reading that absence as
+disagreement would break the collapse of three reposts into one alert.
+
+`POSSIBLE_DUPLICATE` also no longer abandons the scan on the first weak match, so a genuine merge
+later in the pool is still reached, and the reasons `compare_events` had already computed are
+written into the candidate's trace instead of discarded.
 
 Notifications use an outbox row before Discord delivery. On restart, pending rows are reconciled by
 searching recent bot messages for an embed footer token before resending. Meaningful updates within

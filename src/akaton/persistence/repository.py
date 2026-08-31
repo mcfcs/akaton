@@ -17,6 +17,7 @@ from akaton.domain.models import (
     EventFacts,
     ExtractionEnvelope,
     FetchResult,
+    MentionLead,
     NotificationPayload,
 )
 from akaton.persistence.models import (
@@ -25,6 +26,7 @@ from akaton.persistence.models import (
     EventRow,
     EventSourceRow,
     EventVersionRow,
+    LeadRow,
     NotificationRow,
     SearchRunRow,
     SourceSnapshotRow,
@@ -37,6 +39,8 @@ from akaton.processing.dedup import (
     is_same_announcement,
 )
 from akaton.processing.editions import dates_contradict, editions_conflict
+from akaton.processing.leads import LeadState, lead_key
+from akaton.processing.leads import is_due as is_lead_due
 from akaton.processing.normalize import normalize_url
 
 # A repost can trail the original by weeks. Beyond this the pair is more likely to be a
@@ -66,6 +70,13 @@ def _stored_start(row: EventRow) -> DateFact | None:
         return DateFact.model_validate(value)
     except ValidationError:
         return None
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    """Attach UTC to a timestamp read back from SQLite, which stores no offset."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
 
 
 def stable_hash(value: Any) -> str:
@@ -443,6 +454,92 @@ class Repository:
         )
         return row is not None
 
+    async def record_mention(self, mention: MentionLead) -> LeadRow:
+        """Record that someone named a competition, without spending a search on it.
+
+        A second sighting of the same name only increments a counter: twenty people
+        asking about eGovPH is one competition and must cost one search, not twenty. A
+        mention that names an *edition* — a year or month beside the name — has a
+        different key, so a genuinely new run is a new lead rather than a suppressed one.
+        """
+        key = lead_key(mention.normalized_name, mention.edition_hint)
+        existing = await self.session.scalar(select(LeadRow).where(LeadRow.lead_key == key))
+        if existing:
+            existing.sightings += 1
+            existing.last_seen_at = datetime.now(UTC)
+            return existing
+        row = LeadRow(
+            lead_key=key,
+            name=mention.name,
+            normalized_name=mention.normalized_name,
+            edition_hint=mention.edition_hint,
+            platform=mention.platform,
+            mention_kind=mention.mention_kind,
+            source_url=mention.source_url,
+            source_key=mention.source_key,
+            mention_excerpt=(mention.excerpt or "")[:500] or None,
+            state=LeadState.NEW,
+        )
+        self.session.add(row)
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            # Two collectors saw the same name in one run.
+            await self.session.rollback()
+            return await self.session.scalar(select(LeadRow).where(LeadRow.lead_key == key))
+        return row
+
+    async def due_leads(self, limit: int, *, now: datetime | None = None) -> list[LeadRow]:
+        """Leads that have earned a search request, most recently seen first.
+
+        The cooldown reads the lead's own `last_searched_at` rather than `search_history`
+        so a lead deferred for budget is never mistaken for one already tried.
+        """
+        if limit <= 0:
+            return []
+        rows = list(
+            (
+                await self.session.scalars(
+                    select(LeadRow)
+                    .order_by(LeadRow.last_searched_at.is_(None).desc(), LeadRow.sightings.desc())
+                    .limit(limit * 8)
+                )
+            ).all()
+        )
+        due = [
+            row
+            for row in rows
+            if is_lead_due(row.state, row.search_runs, row.last_searched_at, now=now)
+        ]
+        return due[:limit]
+
+    async def mark_lead_searched(
+        self, lead_id: int, *, resolved_url: str | None, error: str | None = None
+    ) -> None:
+        """Record the outcome of a lead's search and start its cooldown."""
+        row = await self.session.get(LeadRow, lead_id)
+        if row is None:
+            return
+        row.search_runs += 1
+        row.last_searched_at = datetime.now(UTC)
+        row.resolved_url = resolved_url or row.resolved_url
+        row.last_error = error
+        row.state = LeadState.RESOLVED if resolved_url else LeadState.UNRESOLVED
+        await self.session.flush()
+
+    async def attach_lead_event(self, lead_id: int, event_id: int | None, *, kept: bool) -> None:
+        """Say what became of a resolved page.
+
+        DISCARDED is kept distinct from UNRESOLVED so the dashboard can tell "we never
+        found it" from "we found it and it was not for us" — two different problems.
+        """
+        row = await self.session.get(LeadRow, lead_id)
+        if row is None:
+            return
+        row.event_id = event_id
+        row.state = LeadState.RESOLVED if kept else LeadState.DISCARDED
+        await self.session.flush()
+
     async def record_search_run(
         self, provider: str, group: str, query: str, result_count: int, error: str | None = None
     ) -> None:
@@ -488,4 +585,9 @@ class Repository:
                 .group_by(SearchRunRow.query_group, SearchRunRow.query)
             )
         ).all()
-        return {(group, query): last for group, query, last in rows}
+        # SQLite has no timezone type: `DateTime(timezone=True)` round-trips through a
+        # string with no offset, so these come back naive. Both callers compare them
+        # against an aware `now` — `choose_due_queries` and the adapter cadence check —
+        # and a naive/aware comparison raises TypeError, which took out every scheduled
+        # discovery run after the first search was ever recorded.
+        return {(group, query): as_utc(last) for group, query, last in rows if last}
