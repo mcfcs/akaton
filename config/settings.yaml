@@ -1,6 +1,9 @@
 timezone: Asia/Manila
 discovery_interval_hours: 6
-discovery_queries_per_run: 8
+# 12 queries x 4 runs a day is 48 slots. The rotation asks for roughly 52 (the 6-hour
+# hot group alone wants 24), so it stays slightly oversubscribed on purpose: the most
+# overdue query wins, and a run is never padded with searches nobody is waiting for.
+discovery_queries_per_run: 12
 # Candidates processed in parallel within one search page. Per-domain rate limits in
 # config/domains.yaml still apply, so this only overlaps work across different domains.
 discovery_concurrency: 6
@@ -10,7 +13,12 @@ llm_concurrency: 1
 # Seconds between search queries. SearXNG scrapes consumer search engines, and firing a
 # run's queries back to back gets them suspended for "too many requests" or a CAPTCHA.
 search_interval_seconds: 6
-monthly_search_budget: 950
+# A self-hosted SearXNG has no API quota; this is a guard against a runaway loop
+# hammering the upstream engines. It has to clear the scheduled draw with room to spare:
+# the old 950 sat below 8 x 4 x 30, so the last day of every month discovered nothing and
+# reported no error. The scheduled draw is now 12 x 4 x 31 = 1488, plus up to 3 mention
+# resolutions a run (372) and the occasional backfill.
+monthly_search_budget: 2000
 refresh_interval_hours: 24
 notification_threshold: 65
 high_priority_threshold: 80

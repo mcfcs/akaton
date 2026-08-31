@@ -24,6 +24,9 @@ class SearchPage(BaseModel):
     # index of its own, so when these are all suspended it returns HTTP 200 with an empty
     # result list, which is otherwise indistinguishable from a genuine absence of results.
     unresponsive_engines: list[str] = Field(default_factory=list)
+    # True when no engine capable of answering did, so an empty result set says nothing
+    # about whether matches exist. The provider decides this: only it knows its engines.
+    degraded: bool = False
 
 
 class SearchProvider(Protocol):

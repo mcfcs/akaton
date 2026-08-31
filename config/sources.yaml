@@ -29,7 +29,9 @@ organizers:
     enabled: true
   - id: up
     name: University of the Philippines
-    aliases: [UP, UP Diliman]
+    # "UP Diliman" leads because the first alias becomes the search term, and a query for
+    # "UP" on its own matches the preposition far more often than the university.
+    aliases: [UP Diliman, UP, University of the Philippines]
     domains: [up.edu.ph]
     category: university
     authority: 90
@@ -105,13 +107,23 @@ platforms:
   hackathons.ph: 70
   unstop.com: 70
   lu.ma: 65
-  luma.com: 65
   8layeracademy.com: 65
   aifest.ph: 65
+# Expanded once per enabled organizer above. `{alias}` is the organizer's first alias.
+#
+# These are name-based, not `site:`-based, and that is the point. `site:gcash.com
+# "case competition"` was a near-certain zero: GCash announces on Facebook, which is
+# exactly where ImaGnation was found. A `site:` operator also narrows the answering
+# engine pool from about six to three, so those queries were both the least productive
+# and the first to fail under throttling. A name query reaches the announcement wherever
+# it was published, and the organizer's authority score still lets its own domain clear
+# the verifier's gate when the announcement is there.
 query_templates:
-  - 'site:{domain} hackathon registration'
-  - 'site:{domain} "case competition"'
-  - '"{name}" innovation challenge registration'
+  - '"{alias}" hackathon registration Philippines'
+  - '"{alias}" "case competition" OR ideathon Philippines'
+# 13 organizers x 2 templates is 26 queries. At 24 hours they alone would outweigh the
+# whole rotation; at 72 they cost about 9 slots a day and leave room for the hot group.
+organizer_cadence_hours: 72
 structured_sources:
   devpost:
     enabled: true
@@ -136,8 +148,17 @@ structured_sources:
     # unattended monitor: it then rotates proxy and moves on instead of stalling.
     challenge_wait_seconds: 0
     profile_dir: data/.browser-profile
-    subreddits: [Philippines, ProgrammerPH, studentsph, PHCareers]
-    terms: ["hackathon", "case competition", "ideathon", "datathon"]
+    # r/Philippines is high-volume and almost never carries a competition announcement;
+    # the developer and IT subreddits are where they are actually posted and discussed.
+    subreddits: [PinoyProgrammer, ITPhilippines, ProgrammerPH]
+    terms:
+      - hackathon
+      - business case
+      - case competition
+      - competition
+      - challenge
+      - ideathon
+      - datathon
     # Each term costs one search plus up to this many post pages, so the whole run is
     # bounded at subreddits x terms x (1 + max_posts_per_term) page loads.
     max_posts_per_term: 5
@@ -153,8 +174,11 @@ structured_sources:
     max_age_days: 62
     headless: false
     # Seconds to hold a visible login or checkpoint open. Leave at 0 for an
-    # unattended monitor: it then skips the run instead of stalling.
-    login_wait_seconds: 600
+    # unattended monitor: it then skips the run instead of stalling. At 600 a single
+    # checkpoint blocked the scheduled run for ten minutes every six hours, with nobody
+    # watching to solve it. tools/facebook_login.py raises this to 900 on its own,
+    # because there the whole point is that a person is sitting in front of it.
+    login_wait_seconds: 0
     # Proxy login is what made Facebook serve an endless captcha. Login and
     # scrape on the local connection; outbound event pages still use proxies.txt.
     use_proxy: false

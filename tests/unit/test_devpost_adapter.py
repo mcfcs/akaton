@@ -35,7 +35,8 @@ async def test_only_open_hackathons_become_candidates():
     assert urls == {"https://global-ai.devpost.com/"}
 
 
-async def test_queries_target_the_philippines_and_online_events():
+async def test_every_query_names_the_country_rather_than_the_whole_catalogue():
+    """`challenge_type[]=online` asked for every open online hackathon on earth."""
     seen: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -48,7 +49,8 @@ async def test_queries_target_the_philippines_and_online_events():
     joined = " ".join(seen).casefold()
     assert "philippines" in joined
     assert "manila" in joined
-    assert "online" in joined
+    assert "challenge_type" not in joined
+    assert all(request.casefold().count("search=") == 1 for request in seen)
 
 
 async def test_metadata_is_carried_into_the_snippet():

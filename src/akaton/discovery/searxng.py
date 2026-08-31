@@ -7,6 +7,23 @@ import httpx
 from akaton.discovery.base import SearchPage, SearchRequest
 from akaton.domain.models import CandidateSeed
 
+# Engines that actually carry a result set. SearXNG lists a dozen more, but the rest are
+# dictionaries, wikis and niche indexes that return nothing for a query like this — so
+# their silence says nothing about whether the search ran.
+PRIMARY_ENGINES = frozenset(
+    {
+        "bing",
+        "brave",
+        "duckduckgo",
+        "duckduckgo web",
+        "google",
+        "google cse",
+        "mojeek",
+        "qwant",
+        "startpage",
+    }
+)
+
 
 class SearXNGSearchProvider:
     """Search through a private SearXNG instance without a paid API key."""
@@ -64,7 +81,28 @@ class SearXNGSearchProvider:
                 )
             except (TypeError, ValueError):
                 continue
-        return SearchPage(results=results, unresponsive_engines=_unresponsive(body))
+        unresponsive = _unresponsive(body)
+        return SearchPage(
+            results=results,
+            unresponsive_engines=unresponsive,
+            degraded=_degraded(unresponsive),
+        )
+
+
+def _engine_name(entry: str) -> str:
+    return entry.split(":", 1)[0].strip().casefold()
+
+
+def _degraded(unresponsive: list[str]) -> bool:
+    """True only when no engine capable of answering did.
+
+    Some engines are almost always suspended — a run routinely reports six unresponsive
+    while still returning fifty results from the rest. Treating "any engine down" as a
+    failure reported a query that genuinely has no matches as a broken backend, which is
+    what made 28 of 33 recorded searches look failed.
+    """
+    down = {_engine_name(entry) for entry in unresponsive}
+    return bool(PRIMARY_ENGINES) and PRIMARY_ENGINES <= down
 
 
 def _unresponsive(body: dict) -> list[str]:

@@ -11,13 +11,16 @@ from akaton.fetch.manager import FetchManager
 
 
 class DevpostAdapter:
-    """Devpost's JSON API, asked for Philippine and online hackathons specifically.
+    """Devpost's JSON API, asked for Philippine hackathons specifically.
 
     The listing page it used to scrape was `/hackathons?status=open`, which is every
     open hackathon on the site regardless of country, so a run mostly produced events
-    the profile could never enter. These queries ask for the two things that are
-    relevant: hackathons that name the Philippines, and online ones that a Filipino
-    participant can join from anywhere.
+    the profile could never enter.
+
+    `challenge_type[]=online` was the same mistake in a narrower form: every open online
+    hackathon in the world, hundreds of them, and the single highest-volume lowest-
+    precision producer in a run. An online hackathon a Filipino can actually join still
+    arrives here when it names the country, and through the search rotation otherwise.
     """
 
     name = "devpost"
@@ -25,7 +28,7 @@ class DevpostAdapter:
     queries: tuple[dict[str, str], ...] = (
         {"search": "philippines"},
         {"search": "manila"},
-        {"challenge_type[]": "online"},
+        {"search": "filipino"},
     )
 
     def __init__(self, fetcher: FetchManager, *, client: httpx.AsyncClient | None = None) -> None:

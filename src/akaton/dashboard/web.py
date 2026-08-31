@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import secrets
+from datetime import date
+from functools import partial
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import String, func, select
 
 from akaton.config import ConfigBundle
@@ -18,6 +21,17 @@ from akaton.persistence.models import (
     NotificationRow,
     SearchRunRow,
 )
+
+
+class BackfillRequest(BaseModel):
+    """A backdate asked for from the dashboard."""
+
+    since: date
+    # Collectors to run. Empty means search alone, matching `akaton backfill` with no
+    # --sources: the structured adapters only publish what is open now, so replaying
+    # them against a past date finds nothing.
+    sources: list[str] = Field(default_factory=list)
+    queries: int = Field(default=16, ge=1, le=100)
 
 
 def create_dashboard(
@@ -150,6 +164,44 @@ def create_dashboard(
     async def refresh() -> dict[str, object]:
         accepted = controller.trigger("refresh")
         return {"accepted": accepted, "message": _action_message(accepted, "refresh")}
+
+    @app.post("/api/actions/backfill", status_code=202, dependencies=secured)
+    async def backfill(request: BackfillRequest) -> dict[str, object]:
+        """Re-run discovery over a past date range.
+
+        Unlike the scheduled pass this names its collectors, which also waives their
+        cadence: someone asking to read the Facebook group back to June means now, not
+        at the next six-hour boundary.
+        """
+        if request.since > date.today():
+            raise HTTPException(status_code=422, detail="Backdate must not be in the future")
+        sources = request.sources or None
+        if sources:
+            unknown = sorted(set(sources) - set(controller.sources))
+            if unknown:
+                raise HTTPException(
+                    status_code=422, detail=f"Unknown source(s): {', '.join(unknown)}"
+                )
+        accepted = controller.trigger(
+            "backfill",
+            partial(
+                controller.discovery,
+                since=request.since,
+                historical_test=True,
+                query_limit=request.queries,
+                sources=sources,
+            ),
+        )
+        window = f"since {request.since.isoformat()}"
+        scope = ", ".join(sources) if sources else "search"
+        return {
+            "accepted": accepted,
+            "message": (
+                f"Backdate started ({scope}, {window})"
+                if accepted
+                else "A backdate is already running"
+            ),
+        }
 
     @app.post("/api/actions/bot/start", dependencies=secured)
     async def bot_start() -> dict[str, object]:
@@ -304,6 +356,23 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
     </div>
   </header>
 
+  <section class="mt-4 rounded-xl border border-edge bg-panel/90 p-5">
+    <div class="flex flex-wrap items-end gap-3">
+      <div>
+        <h2 class="text-base font-semibold">Backdate</h2>
+        <p class="mt-1 text-xs text-emerald-200/50">Re-read the selected collectors from a past date. Naming a collector waives its cadence, so it runs now.</p>
+      </div>
+      <label class="text-xs text-emerald-200/60">Since
+        <input id="bf-since" type="date" class="mt-1 block rounded-lg border border-edge bg-panel px-3 py-2 text-sm focus:border-mint focus:outline-none">
+      </label>
+      <div>
+        <p class="text-xs text-emerald-200/60">Collectors</p>
+        <div id="bf-sources" class="mt-1 flex flex-wrap gap-2"></div>
+      </div>
+      <button id="bf-run" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Run backdate</button>
+    </div>
+  </section>
+
   <section class="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
     <div class="rounded-xl border border-edge bg-panel/90 p-4 shadow-lg shadow-black/20">
       <p class="text-xs text-emerald-200/60">Candidates seen</p><p id="k-candidates" class="mt-1 text-3xl font-extrabold">—</p></div>
@@ -375,7 +444,13 @@ function headers() { return token.value ? {'X-Akaton-Token': token.value} : {}; 
 async function api(path, options = {}) {
   options.headers = {...headers(), ...(options.headers || {})};
   const r = await fetch(path, options);
-  if (!r.ok) throw new Error(r.status === 401 ? 'Dashboard token required' : 'HTTP ' + r.status);
+  if (!r.ok) {
+    if (r.status === 401) throw new Error('Dashboard token required');
+    // A rejected backdate says why in `detail`; showing "HTTP 422" instead would leave
+    // the operator guessing which part of the form the server disliked.
+    const detail = await r.json().then((b) => b.detail).catch(() => null);
+    throw new Error(typeof detail === 'string' ? detail : 'HTTP ' + r.status);
+  }
   return r.json();
 }
 function toast(message) {
@@ -406,6 +481,39 @@ document.querySelectorAll('[data-bot]').forEach((b) => b.onclick = async () => {
   finally { b.disabled = false; setTimeout(load, 1200); }
 });
 $('clear-filter').onclick = () => { filter = null; load(); };
+
+// The collector list comes from the server, so the picker offers exactly the adapters
+// this deployment enabled rather than a list that drifts from config/sources.yaml.
+let backfillSources = [];
+function renderSources(names) {
+  if (JSON.stringify(names) === JSON.stringify(backfillSources)) return;
+  backfillSources = names;
+  const box = $('bf-sources'); box.replaceChildren();
+  for (const name of names) {
+    const label = document.createElement('label');
+    label.className = 'flex cursor-pointer items-center gap-1.5 rounded-full border border-edge px-3 py-1 text-xs';
+    const input = document.createElement('input');
+    input.type = 'checkbox'; input.value = name; input.className = 'accent-mint';
+    input.checked = name !== 'devpost' && name !== 'kaggle';
+    const span = document.createElement('span'); span.textContent = name;
+    label.append(input, span); box.append(label);
+  }
+}
+$('bf-run').onclick = async () => {
+  const since = $('bf-since').value;
+  if (!since) { toast('Pick a date to backdate from'); return; }
+  const sources = [...$('bf-sources').querySelectorAll('input:checked')].map((i) => i.value);
+  const button = $('bf-run'); button.disabled = true;
+  try {
+    const d = await api('/api/actions/backfill', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({since, sources}),
+    });
+    toast(d.message);
+  } catch (e) { toast(e.message); }
+  finally { button.disabled = false; setTimeout(load, 1500); }
+};
 
 function renderSearches(rows) {
   const box = $('searches'); box.replaceChildren();
@@ -516,6 +624,7 @@ async function load() {
     $('k-bot-detail').textContent = bot.last_error ? bot.last_error
       : bot.user ? 'connected as ' + bot.user
       : bot.state === 'NOT_CONFIGURED' ? 'no Discord token configured' : 'not connected';
+    renderSources(s.monitor.sources || ['search']);
     const next = (s.monitor.jobs || []).map((j) => j.next_run_at).filter(Boolean).sort()[0];
     $('k-next').textContent = next ? 'next ' + new Date(next).toLocaleTimeString() : 'no job scheduled';
     $('subtitle').textContent = s.configuration.search_provider + ' search · ' + s.configuration.llm_provider +

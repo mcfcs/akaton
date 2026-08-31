@@ -162,3 +162,26 @@ async def test_one_failing_candidate_does_not_abort_the_page(config, database):
     assert counts["candidates"] == 4
     assert counts["processed"] == 0
     assert counts["errors"] == 4
+
+
+async def test_an_unnormalizable_url_does_not_abort_the_page(config, database):
+    """normalize_url IDNA-encodes the host, and pydantic accepts hosts it cannot encode.
+
+    A 70-character label passes HttpUrl validation and raises UnicodeEncodeError, so one
+    bad search result used to throw away every other seed on the page with it.
+    """
+    seeds = [
+        CandidateSeed(
+            url="https://" + "a" * 70 + ".test/event",
+            discovery_channel="search",
+            provider="stub",
+        ),
+        *_seeds(3),
+    ]
+    pipeline = SlowPipeline(delay=0)
+    job = DiscoveryJob(database, config, StubProvider(seeds), pipeline)
+    counts = await job.run(query_limit=1)
+
+    assert len(pipeline.seen) == 3, "the usable seeds still ran"
+    assert counts["processed"] == 3
+    assert counts["errors"] == 1, "the unusable seed is reported, not silently dropped"

@@ -30,20 +30,29 @@ def configured_queries(config: dict) -> list[ScheduledQuery]:
 
 
 def organizer_queries(config: dict) -> list[ScheduledQuery]:
+    """Expand the per-organizer templates.
+
+    Templates get `{name}`, `{alias}` and `{domain}`. `alias` is the organizer's first
+    alias — the short form people actually write, "DICT" rather than "Department of
+    Information and Communications Technology" — falling back to the full name.
+    """
     values: list[ScheduledQuery] = []
     templates = config.get("query_templates", [])
+    cadence = int(config.get("organizer_cadence_hours", 24))
     for organizer in config.get("organizers", []):
         if not organizer.get("enabled", True):
             continue
         domains = organizer.get("domains") or [""]
+        aliases = organizer.get("aliases") or []
+        alias = aliases[0] if aliases else organizer["name"]
         for template in templates:
             for domain in domains[:1]:
                 values.append(
                     ScheduledQuery(
                         group="organizers",
-                        query=template.format(name=organizer["name"], domain=domain),
+                        query=template.format(name=organizer["name"], alias=alias, domain=domain),
                         freshness="pm",
-                        cadence_hours=24,
+                        cadence_hours=cadence,
                         weight=3,
                     )
                 )

@@ -447,12 +447,22 @@ class Repository:
         return int(result or 0)
 
     async def search_history(self, provider: str) -> dict[tuple[str, str], datetime]:
+        """When each query last actually ran, for the cadence rotation.
+
+        Only successful runs count. A query that failed did not get its answer, so
+        letting it record a cadence slot would park it for another 6 to 72 hours over
+        an outage it had no part in — the queries hit hardest by throttling being
+        exactly the ones then waiting longest to be retried.
+        """
         rows = (
             await self.session.execute(
                 select(
                     SearchRunRow.query_group, SearchRunRow.query, func.max(SearchRunRow.started_at)
                 )
-                .where(SearchRunRow.provider == provider)
+                .where(
+                    SearchRunRow.provider == provider,
+                    SearchRunRow.status == "SUCCEEDED",
+                )
                 .group_by(SearchRunRow.query_group, SearchRunRow.query)
             )
         ).all()

@@ -60,8 +60,16 @@ HYDRATE_WAIT_SECONDS = 20.0
 PERMALINK_RE = re.compile(r'href="(/r/[^"]+/comments/[^"?]+)"')
 
 # Philippine subreddits where competitions actually get posted.
-DEFAULT_SUBREDDITS = ("Philippines", "ProgrammerPH", "studentsph", "PHCareers", "AntiKorupsyon")
-DEFAULT_TERMS = ("hackathon", "case competition", "ideathon", "datathon")
+DEFAULT_SUBREDDITS = ("PinoyProgrammer", "ITPhilippines", "ProgrammerPH")
+DEFAULT_TERMS = (
+    "hackathon",
+    "business case",
+    "case competition",
+    "competition",
+    "challenge",
+    "ideathon",
+    "datathon",
+)
 
 
 def listing_url(subreddit: str, *, listing: str = "new") -> str:
@@ -125,20 +133,26 @@ class ShredditSource:
         self.scroll_rounds = scroll_rounds
         self.max_posts_per_term = max_posts_per_term
         self._last_request_at: float | None = None
+        # See FacebookGroupSource.last_error: an empty list has to be able to mean either
+        # "nothing was posted" or "the collector never got off the ground".
+        self.last_error: str | None = None
 
     async def discover(
         self, since: datetime | None = None, cursor: str | None = None
     ) -> list[CandidateSeed]:
+        self.last_error = None
         try:
             from patchright.async_api import async_playwright
         except ImportError:
             logger.warning("shreddit_patchright_missing")
+            self.last_error = "patchright is not installed"
             return []
 
         cutoff = datetime.now(UTC) - timedelta(days=self.max_age_days)
         if since:
             cutoff = max(cutoff, since)
         seeds: dict[str, CandidateSeed] = {}
+        searches = hits = 0
         async with async_playwright() as playwright:
             session = _BrowserSession(self, playwright)
             try:
@@ -146,6 +160,8 @@ class ShredditSource:
                     for term in self.terms:
                         await self._throttle()
                         permalinks = await session.search_permalinks(search_url(subreddit, term))
+                        searches += 1
+                        hits += len(permalinks)
                         logger.info(
                             "shreddit_search",
                             extra={"subreddit": subreddit, "term": term, "hits": len(permalinks)},
@@ -162,6 +178,11 @@ class ShredditSource:
                                 seeds.setdefault(str(seed.url), seed)
             finally:
                 await session.close()
+        if searches and not hits:
+            # Searching a busy subreddit for "hackathon" over 90 days always matches
+            # something. Every search coming back empty means the result list never
+            # rendered — a block or a challenge page — not that Reddit went quiet.
+            self.last_error = f"no results from any of {searches} searches; likely blocked"
         logger.info("shreddit_discovered", extra={"seeds": len(seeds)})
         return list(seeds.values())
 

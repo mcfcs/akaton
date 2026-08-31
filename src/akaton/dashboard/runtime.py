@@ -103,18 +103,33 @@ class MonitorController:
         scheduler: AsyncIOScheduler,
         discovery: Callable[[], Awaitable[dict[str, int]]],
         refresh: Callable[[], Awaitable[dict[str, int]]],
+        *,
+        sources: list[str] | None = None,
     ) -> None:
         self.scheduler = scheduler
         self.discovery = discovery
         self.refresh = refresh
+        # Collectors a backdate may name. "search" is always available; the rest are
+        # whichever adapters this deployment actually enabled, so the dashboard offers
+        # exactly what exists rather than a hardcoded list.
+        self.sources = sources or ["search"]
         self.tasks: dict[str, asyncio.Task] = {}
         self.last_runs: dict[str, dict[str, Any]] = {}
 
-    def trigger(self, name: str) -> bool:
+    def trigger(
+        self, name: str, job: Callable[[], Awaitable[dict[str, int]]] | None = None
+    ) -> bool:
+        """Start a named job unless one of that name is already running.
+
+        `job` overrides the default for the name, which is how a backdate passes its
+        date and collector list while still sharing the single-flight guard: two
+        backfills cannot overlap, and neither can a backfill with itself.
+        """
         existing = self.tasks.get(name)
         if existing and not existing.done():
             return False
-        job = self.discovery if name == "discovery" else self.refresh
+        if job is None:
+            job = self.discovery if name == "discovery" else self.refresh
         self.tasks[name] = asyncio.create_task(self._run(name, job), name=f"akaton-{name}")
         return True
 
@@ -167,4 +182,5 @@ class MonitorController:
             "jobs": jobs,
             "running": running,
             "last_runs": self.last_runs,
+            "sources": self.sources,
         }

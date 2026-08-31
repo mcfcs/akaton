@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -78,8 +78,8 @@ async def database():
     await db.close()
 
 
-def _client(database, *, bot=None, notifier=None, config=None):
-    controller = MonitorController(_FakeScheduler(), _noop, _noop)
+def _client(database, *, bot=None, notifier=None, config=None, controller=None):
+    controller = controller or MonitorController(_FakeScheduler(), _noop, _noop)
     app = create_dashboard(database, controller, config, bot=bot, notifier=notifier)
     return TestClient(app)
 
@@ -179,6 +179,77 @@ async def test_a_missing_event_is_not_found(database, config):
         client.post("/api/actions/bot/start")
         assert client.post("/api/actions/events/999/notify").status_code == 404
         client.post("/api/actions/bot/stop")
+
+
+class RecordingDiscovery:
+    """Stands in for DiscoveryJob.run, capturing the arguments a backdate sends it."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.gate = asyncio.Event()
+
+    async def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        await self.gate.wait()
+        return {"queries": 0}
+
+
+async def test_a_backdate_reaches_the_named_collectors(database, config):
+    discovery = RecordingDiscovery()
+    controller = MonitorController(
+        _FakeScheduler(), discovery, _noop, sources=["search", "facebook", "reddit"]
+    )
+    with _client(database, config=config, controller=controller) as client:
+        assert client.get("/api/status").json()["monitor"]["sources"] == [
+            "search",
+            "facebook",
+            "reddit",
+        ]
+        response = client.post(
+            "/api/actions/backfill",
+            json={"since": "2026-06-01", "sources": ["facebook", "reddit"]},
+        )
+        assert response.status_code == 202
+        assert response.json()["accepted"] is True
+
+        # Single-flight: a second backdate is refused while the first is still running.
+        again = client.post("/api/actions/backfill", json={"since": "2026-06-01"})
+        assert again.json()["accepted"] is False
+        discovery.gate.set()
+
+    assert len(discovery.calls) == 1
+    call = discovery.calls[0]
+    assert call["since"] == date(2026, 6, 1)
+    assert call["sources"] == ["facebook", "reddit"]
+    assert call["historical_test"] is True
+
+
+async def test_a_backdate_refuses_an_unknown_collector(database, config):
+    controller = MonitorController(_FakeScheduler(), _noop, _noop, sources=["search", "facebook"])
+    with _client(database, config=config, controller=controller) as client:
+        response = client.post(
+            "/api/actions/backfill", json={"since": "2026-06-01", "sources": ["twitter"]}
+        )
+        assert response.status_code == 422
+        assert "twitter" in response.json()["detail"]
+
+
+async def test_a_backdate_refuses_a_future_date(database, config):
+    with _client(database, config=config) as client:
+        response = client.post("/api/actions/backfill", json={"since": "2099-01-01"})
+        assert response.status_code == 422
+
+
+async def test_a_backdate_with_no_collectors_runs_search_alone(database, config):
+    """Matching `akaton backfill` with no --sources: the adapters have no history to replay."""
+    discovery = RecordingDiscovery()
+    discovery.gate.set()
+    controller = MonitorController(_FakeScheduler(), discovery, _noop, sources=["search"])
+    with _client(database, config=config, controller=controller) as client:
+        response = client.post("/api/actions/backfill", json={"since": "2026-06-01"})
+        assert response.status_code == 202
+        assert "search" in response.json()["message"]
+    assert discovery.calls[0]["sources"] is None
 
 
 async def test_a_refused_delivery_is_reported_and_recorded(database, config):

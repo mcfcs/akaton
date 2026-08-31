@@ -137,16 +137,26 @@ produce targeted searches. To add or disable a query, edit YAML rather than appl
 | Source | What it covers | Limitation |
 | --- | --- | --- |
 | Rotating web queries | Organiser sites, news, aggregators | Depends on SearXNG's upstream engines |
-| Organizer `site:` queries | One per listed organizer domain | Only finds organizers you have listed |
-| Devpost API | Open hackathons naming the Philippines or Manila, plus open online ones | Few PH-located events are ever open there |
-| Reddit, via headed Chrome | Philippine subreddits | Needs Patchright, Chrome, and a desktop session |
+| Organizer name queries | Two per listed organizer | Only finds organizers you have listed |
+| Devpost API | Open hackathons naming the Philippines, Manila or Filipino | Few PH-located events are ever open there |
+| Reddit, via headed Chrome | r/PinoyProgrammer, r/ITPhilippines, r/ProgrammerPH | Needs Patchright, Chrome, and a desktop session |
 | Facebook groups, via headed Chrome | philhacks posts and replies | Needs a one-time Facebook login in the persistent profile |
 
+Organizer queries are name-based (`"DICT" hackathon registration Philippines`), not `site:`-based.
+Measured against the live instance, `site:dict.gov.ph hackathon registration` returns **zero**
+results and `site:gcash.com "case competition"` returns one irrelevant promo page, while the name
+queries return twenty each and surface the actual announcements — including GCash's ImaGnation,
+which was posted to Facebook and no `site:gcash.com` query could ever have reached. A `site:`
+operator also narrows the answering engine pool from about six engines to three, so those queries
+were both the least productive and the first to fail under throttling. The organizer's authority
+score still lets its own domain clear the verifier's gate when the announcement is there.
+
 Devpost is queried through `https://devpost.com/api/hackathons` with `status[]=open` plus a
-Philippines, Manila, or online filter. It previously scraped `/hackathons?status=open`, which is
+Philippines, Manila or Filipino filter. It previously scraped `/hackathons?status=open`, which is
 every open hackathon on the site regardless of country, so most of what it produced was
-unenterable. Note that Devpost currently lists no *open* Philippine hackathon at all: all 18 that
-match "philippines" have ended, so the online query is what actually contributes.
+unenterable; `challenge_type[]=online` was the same mistake in a narrower form — every open online
+hackathon in the world, and the highest-volume lowest-precision producer in a run. An online
+hackathon a Filipino can join still arrives when it names the country.
 
 Instagram and LinkedIn still serve a JavaScript shell to a logged-out client, so those search
 hits are rejected as `SEARCH_SNIPPET_ONLY`. Facebook search snippets are treated the same way.
@@ -311,13 +321,23 @@ Throttling is the practical limit on how often discovery can run, and it is easy
 several 16-query runs in quick succession, Brave, Google CSE, and Startpage suspended the instance
 and DuckDuckGo timed out; SearXNG then answered HTTP 200 with an empty result list. Once an
 instance is in that state a fresh 16-query burst re-suspends it immediately, while the engines
-recover after a few idle minutes. The scheduled default of `discovery_queries_per_run: 8` every
-six hours is well inside this limit; repeated back-to-back manual runs are not.
+recover after a few idle minutes. The scheduled default of `discovery_queries_per_run: 12` every
+six hours, spaced by `search_interval_seconds`, is well inside this limit; repeated back-to-back
+manual runs are not.
 
 Akaton records such a run as a `FAILED` search naming the engines rather than as a successful run
 that found nothing, so the dashboard and `/status` distinguish a throttled backend from a quiet
 week. If searches start failing this way, leave the instance idle for a while or move to
 `SEARCH_PROVIDER=brave` with an API key, which queries an owned index instead.
+
+That distinction has to be drawn carefully, and at first it was not. Marking a search FAILED
+whenever *any* engine was unresponsive reported 28 of 33 searches as broken while the instance was
+returning 48 results a query: six engines are suspended on a routine day, and a `site:` query with
+no matches is an empty answer, not an unreachable backend. A run is now FAILED only when **no**
+engine capable of answering did (`PRIMARY_ENGINES` in `discovery/searxng.py`). A failed search also
+no longer claims its cadence slot — `search_history` counts only successful runs, so a query
+throttled out of one run is eligible again in the next rather than parked for another 6 to 72
+hours.
 
 Patchright is not a search engine. It can render a JavaScript event page after discovery, but using
 it to automate consumer search-result pages would be brittle, CAPTCHA-prone, and inappropriate as
@@ -343,8 +363,9 @@ akaton dashboard
 ```
 
 To use Brave instead, set `SEARCH_PROVIDER=brave` and provide `BRAVE_SEARCH_API_KEY`. As of August
-2026, Brave advertises monthly credits that cover the configured 950-request budget, but it still
-requires account, plan, card, and API-key setup; verify current terms before relying on that credit.
+2026, Brave advertises monthly credits in the same order as the configured 2000-request budget, so
+check the current allowance against `monthly_search_budget` before switching — and note that it
+requires account, plan, card, and API-key setup regardless.
 
 ## Dashboard
 
@@ -356,8 +377,26 @@ The dashboard polls the local database and shows:
 - recent accepted events, scores, deadlines, and source links;
 - recent candidates, providers, rejection codes, retry state, and last pipeline transition.
 
-Controls trigger one discovery run, refresh known events, or pause/resume automatic scheduling.
-Concurrent duplicate runs are rejected. Set `DASHBOARD_TOKEN` to a long random value for an
+Controls trigger one discovery run, refresh known events, start or stop the Discord bot, send an
+alert for one event by hand, or pause/resume automatic scheduling. Concurrent duplicate runs are
+rejected.
+
+The **Backdate** panel re-reads a chosen date range from chosen collectors. The collector list
+comes from the server, so it offers exactly the adapters this deployment enabled. Naming a
+collector waives its cadence — asking to read the Facebook group back to June means now, not at the
+next six-hour boundary — and two backdates cannot overlap. With no collectors selected it runs
+search alone, matching `akaton backfill --since 2026-06-01`; the equivalent of the panel with
+Facebook and Reddit ticked is:
+
+```powershell
+akaton backfill --since 2026-06-01 --sources facebook,reddit
+```
+
+`--sources` was needed because `since` never used to reach the adapters at all: `DiscoveryJob`
+called `adapter.discover()` with no arguments, so only the search path honoured a backdate even
+though both social collectors already accepted one.
+
+Set `DASHBOARD_TOKEN` to a long random value for an
 additional header check; the page stores it only in that browser's local storage. Keep the service
 bound to the Tailscale address and enforce suitable Tailscale ACLs. If the machine's Tailscale IP
 changes, update `DASHBOARD_HOST` and `TAILSCALE_IP` in `.env`.

@@ -232,14 +232,20 @@ class FacebookGroupSource:
         self._last_request_at: float | None = None
         self.last_posts: list[FacebookPost] = []
         self._sticky_proxy = None
+        # Why the last run produced nothing, when the reason was not "nothing was posted".
+        # A collector that never ran returns an empty list exactly like a quiet week does,
+        # so without this a broken login is invisible until someone notices the silence.
+        self.last_error: str | None = None
 
     async def discover(
         self, since: datetime | None = None, cursor: str | None = None
     ) -> list[CandidateSeed]:
+        self.last_error = None
         try:
             from patchright.async_api import async_playwright
         except ImportError:
             logger.warning("facebook_patchright_missing")
+            self.last_error = "patchright is not installed"
             return []
 
         cutoff = datetime.now(UTC) - timedelta(days=self.max_age_days)
@@ -257,6 +263,7 @@ class FacebookGroupSource:
             try:
                 if not await session.ensure_logged_in():
                     logger.warning("facebook_not_logged_in")
+                    self.last_error = "not logged in; run tools/facebook_login.py"
                     return []
                 for group in self.groups:
                     await self._throttle()

@@ -33,21 +33,22 @@ groups:
   # Event platforms and aggregators. These replaced the former `social` group, whose
   # site:facebook.com / site:linkedin.com / site:instagram.com queries could only ever
   # return domains that config/domains.yaml blocks from fetching.
+  #
+  # A `site:` operator narrows the answering engines from about six to three, so these
+  # are the first queries to come back empty under throttling. They have to earn that.
+  # Removed for not earning it:
+  #   site:devpost.com     - DevpostAdapter already reads the same catalogue through its
+  #                          API, and does it better: events live on *.devpost.com
+  #                          subdomains that this query cannot reach.
+  #   site:unstop.com      - India-focused; Philippine entries are rare and usually
+  #                          reposts of something already found closer to the source.
+  #   site:hackathons.ph   - an operator with no keywords, which several engines answer
+  #                          with nothing at all.
   platforms:
     cadence_hours: 12
     weight: 4
     freshness: pm
     queries:
-      - 'site:devpost.com hackathon Philippines'
-      - 'site:unstop.com competition Philippines'
       - 'site:eventbrite.com hackathon Philippines'
       - 'site:lu.ma hackathon Philippines'
-      - 'site:hackathons.ph'
-  filipino:
-    cadence_hours: 72
-    weight: 1
-    freshness: pm
-    queries:
-      - 'paligsahan teknolohiya Pilipinas pagpaparehistro'
-      - '"bukas ang registration" hackathon Pilipinas'
 

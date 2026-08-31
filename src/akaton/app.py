@@ -112,6 +112,11 @@ def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
     return adapters
 
 
+def _source_names(discovery: DiscoveryJob) -> list[str]:
+    """Collectors a backdate may name, for the dashboard's picker and its validation."""
+    return ["search", *(adapter.name for adapter in discovery.adapters)]
+
+
 def _monitor_jobs(
     config: ConfigBundle,
     database: Database,
@@ -192,7 +197,12 @@ async def _discover_once(config: ConfigBundle) -> None:
     await database.close()
 
 
-async def _backfill(config: ConfigBundle, since: date, query_limit: int) -> None:
+async def _backfill(
+    config: ConfigBundle,
+    since: date,
+    query_limit: int,
+    sources: list[str] | None = None,
+) -> None:
     database, fetcher, pipeline = _dependencies(config)
     await asyncio.to_thread(upgrade_database, config.runtime.database_url, config.root)
     discovery, _, _ = _monitor_jobs(config, database, pipeline, fetcher)
@@ -200,10 +210,19 @@ async def _backfill(config: ConfigBundle, since: date, query_limit: int) -> None
         "HISTORICAL TEST MODE: past-event and registration-deadline gates are bypassed; "
         "normal scheduled discovery remains strict."
     )
+    if sources:
+        known = {"search", *(adapter.name for adapter in discovery.adapters)}
+        unknown = [name for name in sources if name not in known]
+        if unknown:
+            raise ValueError(
+                f"unknown source(s) {', '.join(unknown)}; available: {', '.join(sorted(known))}"
+            )
+        print(f"Collectors: {', '.join(sources)}")
     counts = await discovery.run(
         since=since,
         historical_test=True,
         query_limit=query_limit,
+        sources=sources,
     )
     print(counts)
     await database.close()
@@ -215,7 +234,9 @@ async def _dashboard(config: ConfigBundle) -> None:
     discovery, refresh, maintenance = _monitor_jobs(config, database, pipeline, fetcher)
     scheduler = _scheduler(config, discovery, refresh, maintenance)
     scheduler.start(paused=not config.runtime.dashboard_auto_start)
-    controller = MonitorController(scheduler, discovery.run, refresh.run)
+    controller = MonitorController(
+        scheduler, discovery.run, refresh.run, sources=_source_names(discovery)
+    )
     server = _web_server(config, database, controller)
     try:
         await server.serve()
@@ -261,7 +282,9 @@ async def _run(config: ConfigBundle) -> None:
     bot_controller = BotController(build_bot, config.runtime.discord_bot_token, on_start=wire)
     scheduler = _scheduler(config, discovery, refresh, maintenance)
     scheduler.start(paused=not config.runtime.dashboard_auto_start)
-    controller = MonitorController(scheduler, discovery.run, refresh.run)
+    controller = MonitorController(
+        scheduler, discovery.run, refresh.run, sources=_source_names(discovery)
+    )
     server = _web_server(config, database, controller, bot=bot_controller, notifier=notifier)
     await bot_controller.start()
     try:
@@ -275,6 +298,13 @@ async def _run(config: ConfigBundle) -> None:
         await database.close()
 
 
+def _source_list(value: str) -> list[str]:
+    names = [part.strip().casefold() for part in value.split(",") if part.strip()]
+    if not names:
+        raise argparse.ArgumentTypeError("--sources needs at least one collector name")
+    return names
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="akaton")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -285,6 +315,15 @@ def build_parser() -> argparse.ArgumentParser:
     backfill = subparsers.add_parser("backfill")
     backfill.add_argument("--since", type=date.fromisoformat, required=True)
     backfill.add_argument("--queries", type=int, default=16)
+    backfill.add_argument(
+        "--sources",
+        type=_source_list,
+        default=None,
+        help=(
+            "Comma-separated collectors to run, e.g. facebook,reddit,search. "
+            "Omit for search only, which is what a historical replay can usefully do."
+        ),
+    )
     subparsers.add_parser("dashboard")
     subparsers.add_parser("run")
     return parser
@@ -311,7 +350,7 @@ def main() -> None:
     elif args.command == "backfill":
         if args.queries < 1:
             raise ValueError("--queries must be at least 1")
-        asyncio.run(_backfill(config, args.since, args.queries))
+        asyncio.run(_backfill(config, args.since, args.queries, args.sources))
     elif args.command == "dashboard":
         asyncio.run(_dashboard(config))
     else:
