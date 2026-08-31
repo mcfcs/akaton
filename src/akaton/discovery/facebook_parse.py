@@ -28,6 +28,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 from akaton.domain.models import CandidateSeed
 from akaton.processing.classifier import ACTION_TERMS, RECAP_TERMS, RESULT_TERMS, classify_category
 from akaton.processing.links import FORM_HOSTS
+from akaton.processing.locale import detect_country
 from akaton.processing.normalize import fold_text
 
 FACEBOOK_HOSTS = {
@@ -136,6 +137,22 @@ QUESTION_HINTS = (
     "may hackathon ba",
     "may competition ba",
     "meron bang",
+    # Taglish interrogatives. "po" marks a polite question and rarely appears in an
+    # announcement, which is what makes these safe as standalone signals.
+    "pwede po ba",
+    "pwede ba",
+    "meron po ba",
+    "ano po",
+    "paano po",
+    "saan po",
+    "kailan po",
+    "sino po",
+    "tanong lang",
+    "ask lang",
+    "pahelp",
+    "help po",
+    "may alam ba",
+    "may alam po",
 )
 TEAMMATE_HINTS = (
     "looking for teammate",
@@ -156,6 +173,17 @@ JOB_HINTS = (
     "we're hiring",
     "apply for this role",
     "internship opening",
+    # An internship call reads like a competition announcement — "turn bold ideas into
+    # reality", a deadline, student eligibility — but there is nothing to compete in.
+    "internship-eligible",
+    "internship program",
+    "internship programme",
+    "internship opportunity",
+    "summer internship",
+    "on-the-job training",
+    "ojt",
+    "now hiring",
+    "career opportunity",
 )
 # Meta's own account and security notices render into `[role="article"]` elements that
 # look exactly like comments to the DOM scraper. A real run captured "You're now using a
@@ -414,6 +442,28 @@ def has_competition_term(text: str) -> bool:
     return classify_category(text).value != "UNKNOWN"
 
 
+def _is_question(body: str, lowered: str, *, category: bool) -> bool:
+    """True when the thread is asking about a competition rather than announcing one.
+
+    Checking only the last character missed the real case, whose question is on the
+    first line and whose last line is a follow-up remark:
+
+        pwede po ba manuod if hindi naka register sa egov hackaton?
+        - pwede pasabit kung may available teams pa ( first timer)
+    """
+    if _has_any(lowered, QUESTION_HINTS):
+        return True
+    if len(body) > 400:
+        return False
+    if "?" not in body:
+        return False
+    # An announcement can open with a rhetorical question — "Have you got a bold idea?" —
+    # but it goes on to say what to do about it. The absence of a call to action is what
+    # separates someone asking from someone announcing. A link does not settle it: a
+    # question can carry the very listing it is asking about.
+    return category and not _has_any(lowered, ACTION_TERMS)
+
+
 def mention_kind(text: str, urls: Iterable[str] | None = None) -> str:
     """Classify one post or reply as event, question, teammate, recap, job, or unrelated.
 
@@ -436,25 +486,31 @@ def mention_kind(text: str, urls: Iterable[str] | None = None) -> str:
         return "recap"
     if _has_any(lowered, JOB_HINTS):
         return "job"
+    # The group carries reposts from the wider region. A Malaysian call for entries is
+    # not something a Philippine participant can enter, and screening it here saves a
+    # pipeline run and an extraction.
+    country = detect_country(body)
+    if country and country != "PH":
+        return "foreign"
 
     category = has_competition_term(body)
     action = _has_any(lowered, ACTION_HINTS)
     dated = bool(YEAR_RE.search(body))
-    question = _has_any(lowered, QUESTION_HINTS) or (
-        lowered.endswith("?") and category and len(body) < 220
-    )
     teammate = _has_any(lowered, TEAMMATE_HINTS)
+    question = _is_question(body, lowered, category=category)
 
-    if followable or (has_form_link and category):
-        return "event"
     if teammate:
         return "teammate"
-    # A question that happens to contain "register" is still a question.
+    # A question that happens to contain "register" is still a question:
     # "pwede po ba manuod if hindi naka register sa egov hackaton?"
     if question:
-        return "question"
+        # A question carrying a real listing is still worth the listing. The thread
+        # itself never becomes the candidate; only the page it points at does.
+        return "question_with_link" if followable else "question"
     if _is_talk_not_competition(lowered):
         return "unrelated"
+    if followable or (has_form_link and category):
+        return "event"
     if category and action:
         return "event"
     # In a competition group, "X 2026 registration is now open" is the event even
@@ -475,14 +531,34 @@ def _is_talk_not_competition(lowered: str) -> bool:
         "datathon",
         "codefest",
     )
+    talk_words = (
+        "conference",
+        "webinar",
+        "summit",
+        "symposium",
+        "convention",
+        "congress",
+        "seminar",
+        "masterclass",
+        "bootcamp",
+        "call for papers",
+        "call for abstracts",
+    )
+    # A talk that names an actual competition format is a competition with a talk
+    # attached; a talk that merely says "conference" is not.
     if any(term in lowered for term in event_words):
         return False
-    return any(term in lowered for term in ("conference", "webinar", "summit", "symposium"))
+    return any(term in lowered for term in talk_words)
 
 
 def needs_comment_expansion(post: FacebookPost) -> bool:
     kind = mention_kind(post.text, post.urls)
-    if kind in {"question", "teammate", "unrelated"}:
+    # A question or teammate thread is exactly where a reply carries the real listing.
+    # A recap, job or foreign post has nothing worth opening, and opening it would spend
+    # the run's permalink budget on threads that can never produce a candidate.
+    if kind in {"recap", "job", "foreign"}:
+        return False
+    if kind in {"question", "question_with_link", "teammate", "unrelated"}:
         return True
     return post.comment_count > 0 or bool(post.comments)
 
@@ -581,9 +657,13 @@ def _seeds_for_mention(
     location: str,
     provider: str,
     query: str | None,
+    link_only: bool = False,
 ) -> list[CandidateSeed]:
     outbound = outbound_urls(mention_urls)
     followable = list(dict.fromkeys(url for url in outbound if should_follow_url(url)))
+    if link_only and not followable:
+        # A question thread is only worth the listing it points at, never itself.
+        return []
     assembled = _assemble(post, extra_comment, location=location)
     title = _title_from(mention_text)
     snippet = mention_text[:500]
@@ -645,7 +725,7 @@ def thread_to_seeds(
             seeds.append(seed)
 
     post_kind = mention_kind(post.text, post.urls)
-    if post_kind == "event":
+    if post_kind in {"event", "question_with_link"}:
         take(
             _seeds_for_mention(
                 post=post,
@@ -658,15 +738,22 @@ def thread_to_seeds(
                 location=location,
                 provider=provider,
                 query=query,
+                link_only=post_kind == "question_with_link",
             )
         )
     for comment in post.comments:
         if mention_kind(comment.text, comment.urls) != "event":
             continue
         comment_id = comment.comment_id or _synthetic_comment_id(comment.text)
-        comment_permalink = comment.permalink or permalink_url(
-            post.group, post.post_id, comment_id=comment_id
-        )
+        # A synthetic id is a hash of the reply text, so building a permalink around it
+        # produces a URL that resolves to nothing yet would become the event's canonical
+        # link. Fall back to the post's own permalink and keep the hash for identity.
+        if comment.permalink:
+            comment_permalink = comment.permalink
+        elif comment_id.startswith("fb_"):
+            comment_permalink = post.permalink
+        else:
+            comment_permalink = permalink_url(post.group, post.post_id, comment_id=comment_id)
         take(
             _seeds_for_mention(
                 post=post,

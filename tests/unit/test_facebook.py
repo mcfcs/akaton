@@ -151,6 +151,86 @@ def test_a_research_conference_is_not_treated_as_a_hackathon():
     assert mention_kind("REGISTRATION IS NOW OPEN: RESEARCH CONFERENCE 2026!") == "unrelated"
 
 
+# Verbatim from data/facebook-backfill.json, a real philhacks run that alerted on all
+# six of these. Sourcing them from the scrape is what makes this a regression net rather
+# than a restatement of the rules.
+def test_an_internship_call_is_a_job_not_a_competition():
+    text = (
+        "We are inviting internship-eligible 3rd and 4th year college students to turn bold "
+        "ideas into reality. Deadline of application is on September 5, 2026."
+    )
+    assert mention_kind(text) == "job"
+
+
+def test_a_malay_announcement_is_foreign():
+    text = (
+        "JOM SERTAI URBANMIND AI CHALLENGE 2026 : KATEGORI ORANG AWAM Adakah anda berminat "
+        "meneroka kecerdasan buatan? Sertai pertandingan ini. Hadiah menanti peserta."
+    )
+    assert mention_kind(text) == "foreign"
+
+
+def test_a_malaysian_organiser_is_foreign_even_in_english():
+    text = "PLANMalaysia presents the Urban Innovation Challenge 2026. Registration is now open."
+    assert mention_kind(text) == "foreign"
+
+
+def test_a_regional_event_that_names_the_philippines_is_kept():
+    """A PH signal wins: a Manila event may still name its regional partners."""
+    text = (
+        "ASEAN Data Science Hackathon 2026, hosted in Manila, Philippines with partners in "
+        "Singapore and Jakarta. Registration is now open until October 5, 2026."
+    )
+    assert mention_kind(text) == "event"
+
+
+def test_a_taglish_question_is_a_question():
+    text = (
+        "Good evening po, ask ko lang po if may nakaka alam when i rerelease ang final list "
+        "for the hackathon?"
+    )
+    assert mention_kind(text) == "question"
+
+
+def test_a_question_carrying_a_real_listing_yields_only_the_listing():
+    post = _post(
+        text="Ok lang ba umattend ng hackathon with little experience? "
+        "May nakita ako dito https://devpost.com/beginner-hack",
+        urls=["https://devpost.com/beginner-hack"],
+    )
+    assert mention_kind(post.text, post.urls) == "question_with_link"
+    seeds = thread_to_seeds(post, cutoff=CUTOFF)
+    # The listing is worth following; the question thread itself is not the event.
+    assert [str(seed.url) for seed in seeds] == ["https://devpost.com/beginner-hack"]
+    assert seeds[0].content is None
+
+
+def test_recap_and_job_threads_do_not_burn_the_permalink_budget():
+    recap = _post(text="Congratulations to the winners of last weekend's hackathon!")
+    job = _post(text="We are hiring! Internship program open for 3rd year students.")
+    assert needs_comment_expansion(recap) is False
+    assert needs_comment_expansion(job) is False
+    # A question is exactly where a reply carries the real listing, so it still opens.
+    assert needs_comment_expansion(_post()) is True
+
+
+def test_a_synthetic_comment_id_does_not_invent_a_permalink():
+    """Hashing the reply text produced a URL that resolved to nothing."""
+    post = _post(
+        comments=[
+            FacebookComment(
+                comment_id="",
+                text="Hack4Gov 2026 registration is now open, join us in Manila",
+                urls=[],
+            )
+        ]
+    )
+    seeds = thread_to_seeds(post, cutoff=CUTOFF)
+    assert len(seeds) == 1
+    assert str(seeds[0].url) == post.permalink
+    assert "fb_" in seeds[0].source_key
+
+
 def test_teammate_and_recap_posts_are_dropped():
     teammate = _post(text="Looking for teammates for a hackathon this weekend, anyone joining?")
     recap = _post(text="Congratulations to the winners of last weekend's hackathon!")

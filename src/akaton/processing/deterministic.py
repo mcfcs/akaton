@@ -21,6 +21,7 @@ from akaton.domain.models import (
     ExtractionEnvelope,
     LocationFact,
 )
+from akaton.processing import locale
 from akaton.processing.classifier import classify_category, classify_document
 from akaton.processing.normalize import (
     extract_edition,
@@ -118,15 +119,9 @@ def extract_labeled_dates(text: str, published: datetime | None = None) -> dict[
     return result
 
 
-PH_TERMS = (
-    "philippines",
-    "philippine",
-    "filipino",
-    "filipinas",
-    "pilipinas",
-    "pilipino",
-    "metro manila",
-)
+# Defined in processing.locale, which also knows the neighbouring countries, and
+# re-exported here because this is where callers have always imported it from.
+PH_TERMS = locale.PH_TERMS
 
 
 def is_philippine_host(url: str | None) -> bool:
