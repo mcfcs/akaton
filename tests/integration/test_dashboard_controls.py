@@ -224,6 +224,39 @@ async def test_a_backdate_reaches_the_named_collectors(database, config):
     assert call["historical_test"] is True
 
 
+async def test_the_backdate_panel_reports_a_run_in_progress(database, config):
+    """The button is driven by the poll, so a slow backdate cannot be started twice."""
+    discovery = RecordingDiscovery()
+    controller = MonitorController(_FakeScheduler(), discovery, _noop, sources=["search"])
+    with _client(database, config=config, controller=controller) as client:
+        page = client.get("/").text
+        for element in ("bf-since", "bf-queries", "bf-sources", "bf-run", "bf-status"):
+            assert element in page, f"the panel is missing {element}"
+        assert "renderBackfill" in page
+
+        assert client.get("/api/status").json()["monitor"]["last_runs"] == {}
+        client.post("/api/actions/backfill", json={"since": "2026-06-01", "queries": 25})
+
+        monitor = client.get("/api/status").json()["monitor"]
+        assert monitor["running"]["backfill"] is True
+        assert monitor["last_runs"]["backfill"]["status"] == "RUNNING"
+        discovery.gate.set()
+
+    assert discovery.calls[0]["query_limit"] == 25, "the queries field reaches the job"
+
+
+async def test_a_finished_backdate_reports_its_counts(database, config):
+    discovery = RecordingDiscovery()
+    discovery.gate.set()
+    controller = MonitorController(_FakeScheduler(), discovery, _noop, sources=["search"])
+    with _client(database, config=config, controller=controller) as client:
+        client.post("/api/actions/backfill", json={"since": "2026-06-01"})
+        # TestClient runs the task loop between requests, so the next poll sees the end.
+        run = client.get("/api/status").json()["monitor"]["last_runs"]["backfill"]
+    assert run["status"] == "SUCCEEDED"
+    assert run["result"] == {"queries": 0}
+
+
 async def test_a_backdate_refuses_an_unknown_collector(database, config):
     controller = MonitorController(_FakeScheduler(), _noop, _noop, sources=["search", "facebook"])
     with _client(database, config=config, controller=controller) as client:

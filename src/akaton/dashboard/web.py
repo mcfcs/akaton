@@ -396,19 +396,23 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
 
   <section class="mt-4 rounded-xl border border-edge bg-panel/90 p-5">
     <div class="flex flex-wrap items-end gap-3">
-      <div>
+      <div class="mr-2">
         <h2 class="text-base font-semibold">Backdate</h2>
-        <p class="mt-1 text-xs text-emerald-200/50">Re-read the selected collectors from a past date. Naming a collector waives its cadence, so it runs now.</p>
+        <p class="mt-1 max-w-md text-xs text-emerald-200/50">Re-read the selected collectors from a past date. Naming a collector waives its cadence, so it runs now. Past-event and deadline gates are bypassed, as in <code class="text-emerald-200/70">akaton backfill</code>.</p>
       </div>
       <label class="text-xs text-emerald-200/60">Since
         <input id="bf-since" type="date" class="mt-1 block rounded-lg border border-edge bg-panel px-3 py-2 text-sm focus:border-mint focus:outline-none">
+      </label>
+      <label class="text-xs text-emerald-200/60">Queries
+        <input id="bf-queries" type="number" min="1" max="100" value="16" class="mt-1 block w-20 rounded-lg border border-edge bg-panel px-3 py-2 text-sm focus:border-mint focus:outline-none">
       </label>
       <div>
         <p class="text-xs text-emerald-200/60">Collectors</p>
         <div id="bf-sources" class="mt-1 flex flex-wrap gap-2"></div>
       </div>
-      <button id="bf-run" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Run backdate</button>
+      <button id="bf-run" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint disabled:cursor-not-allowed disabled:opacity-50">Run backdate</button>
     </div>
+    <div id="bf-status" class="mt-3 flex flex-wrap items-center gap-2 text-xs text-emerald-200/60"></div>
   </section>
 
   <section class="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
@@ -550,21 +554,55 @@ function renderSources(names) {
     label.append(input, span); box.append(label);
   }
 }
+// A month back: far enough to be worth doing, short enough that the first run is not a
+// half-hour of headed browser. An empty field would just make the button do nothing.
+(() => {
+  const start = new Date(); start.setDate(start.getDate() - 30);
+  $('bf-since').value = start.toISOString().slice(0, 10);
+  $('bf-since').max = new Date().toISOString().slice(0, 10);
+})();
+
 $('bf-run').onclick = async () => {
   const since = $('bf-since').value;
   if (!since) { toast('Pick a date to backdate from'); return; }
   const sources = [...$('bf-sources').querySelectorAll('input:checked')].map((i) => i.value);
+  const queries = Number($('bf-queries').value) || 16;
   const button = $('bf-run'); button.disabled = true;
   try {
     const d = await api('/api/actions/backfill', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({since, sources}),
+      body: JSON.stringify({since, sources, queries}),
     });
     toast(d.message);
-  } catch (e) { toast(e.message); }
-  finally { button.disabled = false; setTimeout(load, 1500); }
+  } catch (e) { toast(e.message); button.disabled = false; }
+  // On success the button stays disabled until the poll reports the run finished, so a
+  // backfill that takes minutes cannot be started twice and refused.
+  finally { setTimeout(load, 800); }
 };
+
+function renderBackfill(monitor) {
+  const running = Boolean((monitor.running || {}).backfill);
+  const run = (monitor.last_runs || {}).backfill;
+  const button = $('bf-run');
+  button.disabled = running;
+  button.textContent = running ? 'Running…' : 'Run backdate';
+  const box = $('bf-status'); box.replaceChildren();
+  if (!run) { box.append(chip('No backdate run yet', 'text-emerald-200/40')); return; }
+  const started = new Date(run.started_at).toLocaleTimeString();
+  if (run.status === 'RUNNING') {
+    box.append(chip('Running since ' + started, 'bg-amber/15 text-amber'));
+    box.append(chip('collectors keep working while you watch', 'text-emerald-200/40'));
+    return;
+  }
+  const failed = run.status === 'FAILED';
+  box.append(chip(run.status, failed ? 'bg-rose/15 text-rose' : 'bg-mint/15 text-mint'));
+  box.append(chip('started ' + started, 'text-emerald-200/50'));
+  if (run.error) box.append(chip(run.error, 'text-rose/80'));
+  for (const [key, value] of Object.entries(run.result || {})) {
+    box.append(chip(key.replaceAll('_', ' ') + ' · ' + value, 'border border-edge text-emerald-200/70'));
+  }
+}
 
 function renderSearches(rows) {
   const box = $('searches'); box.replaceChildren();
@@ -649,7 +687,10 @@ function renderLeads(rows) {
       state.append(chip(lead.last_error.slice(0, 60), 'text-rose/80')); }
     tr.append(state);
     tr.append(cell(lead.sightings, 'text-right tabular-nums'));
-    tr.append(lead.resolved_url ? link(lead.resolved_url.replace(/^https?:\/\//, '').slice(0, 60), lead.resolved_url)
+    // Character class rather than backslash-escaped slashes: this template is a plain
+    // Python string, so that escape is invalid there and warns at import time.
+    const shown = lead.resolved_url ? lead.resolved_url.replace(/^https?:[/][/]/, '') : '';
+    tr.append(lead.resolved_url ? link(shown.slice(0, 60), lead.resolved_url)
                                 : cell('—', 'text-emerald-200/40'));
     body.append(tr);
   }
@@ -709,6 +750,7 @@ async function load() {
       : bot.user ? 'connected as ' + bot.user
       : bot.state === 'NOT_CONFIGURED' ? 'no Discord token configured' : 'not connected';
     renderSources(s.monitor.sources || ['search']);
+    renderBackfill(s.monitor);
     const next = (s.monitor.jobs || []).map((j) => j.next_run_at).filter(Boolean).sort()[0];
     $('k-next').textContent = next ? 'next ' + new Date(next).toLocaleTimeString() : 'no job scheduled';
     $('subtitle').textContent = s.configuration.search_provider + ' search · ' + s.configuration.llm_provider +

@@ -450,12 +450,19 @@ Controls trigger one discovery run, refresh known events, start or stop the Disc
 alert for one event by hand, or pause/resume automatic scheduling. Concurrent duplicate runs are
 rejected.
 
-The **Backdate** panel re-reads a chosen date range from chosen collectors. The collector list
-comes from the server, so it offers exactly the adapters this deployment enabled. Naming a
-collector waives its cadence — asking to read the Facebook group back to June means now, not at the
-next six-hour boundary — and two backdates cannot overlap. With no collectors selected it runs
-search alone, matching `akaton backfill --since 2026-06-01`; the equivalent of the panel with
-Facebook and Reddit ticked is:
+The **Backdate** panel re-reads a chosen date range from chosen collectors, so a backfill no longer
+needs the command line. It has a date (defaulting to a month back), a query budget, and a collector
+picker whose entries come from the server — so it offers exactly the adapters this deployment
+enabled rather than a list that drifts from `config/sources.yaml`.
+
+Naming a collector waives its cadence: asking to read the Facebook group back to June means now,
+not at the next six-hour boundary. Two backdates cannot overlap, and because a run over Facebook
+and Reddit takes minutes, the button stays disabled and the panel shows `RUNNING` until the poll
+reports it finished — then the run's own counts (queries, candidates, processed, errors, leads).
+Past-event and registration-deadline gates are bypassed exactly as in the CLI.
+
+With no collectors selected it runs search alone, matching `akaton backfill --since 2026-06-01`;
+the equivalent of the panel with Facebook and Reddit ticked is:
 
 ```powershell
 akaton backfill --since 2026-06-01 --sources facebook,reddit
