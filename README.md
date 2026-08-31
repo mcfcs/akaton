@@ -495,6 +495,42 @@ Controls trigger one discovery run, refresh known events, start or stop the Disc
 alert for one event by hand, or pause/resume automatic scheduling. Concurrent duplicate runs are
 rejected.
 
+### Correcting records by hand
+
+Every extraction is a guess, and some of them are wrong. Events, leads and candidates can each be
+corrected from the dashboard through a modal form — a modal rather than inline fields, so a mis-click
+cannot write.
+
+**An edit is pinned.** This is the part that matters. A refresh re-reads the source page every 24
+hours, so an unpinned correction is silently undone within a day and the operator would fix the same
+field over and over without ever seeing why. A corrected field is recorded in `events.manual_overrides`
+and re-applied over every later extraction; the form shows a **pinned** badge with an ✕ to release
+that field back to the page. Only fields you actually change are pinned.
+
+Edits go through the same versioning path as an automatic update, so the history stays complete and
+the new version is marked `manual`. Material changes are recorded but never alert — you already know
+what you just typed.
+
+**Events are archived, not deleted.** Seven tables carry a foreign key to `events.id` with no
+cascade, and `notifications` is the record of what was actually delivered. Archiving hides the event,
+stops `RefreshJob` re-reading it, and makes it unable to alert again; `show archived` finds it and
+Restore brings it back. Leads are genuinely deleted — a lead is a work item, not a record of
+delivery.
+
+Leads can also be renamed, which **re-keys** them, so the cooldown follows the corrected spelling
+rather than the misspelling that was extracted; and **Search now** clears the cooldown so the next
+discovery run spends a request on it. Candidates can be retried, which puts the page back through the
+pipeline — useful right after a classifier rule changes.
+
+### Stopping a running job
+
+A backdate over Facebook and Reddit runs for minutes in a headed browser, so discovery, refresh and
+backfill each get a Stop control that appears only while that job is running. Cancellation runs the
+collectors' `finally` blocks, so Chrome closes with it. A cancelled job reports `CANCELLED`; before
+this it reported `RUNNING` forever, because `CancelledError` derives from `BaseException` and the
+`except Exception` around the job never saw it — which also meant the single-flight guard would never
+let another run start.
+
 The **Backdate** panel re-reads a chosen date range from chosen collectors, so a backfill no longer
 needs the command line. It has a date (defaulting to a month back), a query budget, and a collector
 picker whose entries come from the server — so it offers exactly the adapters this deployment

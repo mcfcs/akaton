@@ -257,6 +257,56 @@ async def test_a_finished_backdate_reports_its_counts(database, config):
     assert run["result"] == {"queries": 0}
 
 
+class TestCancellation:
+    """A backdate over the headed collectors runs for minutes; it has to be stoppable."""
+
+    async def test_a_running_backdate_can_be_cancelled(self, database, config):
+        discovery = RecordingDiscovery()
+        controller = MonitorController(_FakeScheduler(), discovery, _noop, sources=["search"])
+        with _client(database, config=config, controller=controller) as client:
+            client.post("/api/actions/backfill", json={"since": "2026-06-01"})
+            assert client.get("/api/status").json()["monitor"]["running"]["backfill"] is True
+
+            response = client.post("/api/actions/jobs/backfill/cancel")
+            assert response.status_code == 200
+            assert response.json()["cancelled"] is True
+
+            monitor = client.get("/api/status").json()["monitor"]
+            # CancelledError derives from BaseException, so the `except Exception` in
+            # _run never saw it and a cancelled job used to sit at RUNNING forever.
+            assert monitor["last_runs"]["backfill"]["status"] == "CANCELLED"
+            assert monitor["running"]["backfill"] is False
+
+    async def test_a_new_backdate_can_start_after_a_cancel(self, database, config):
+        """The single-flight guard must not be left holding a dead task."""
+        discovery = RecordingDiscovery()
+        controller = MonitorController(_FakeScheduler(), discovery, _noop, sources=["search"])
+        with _client(database, config=config, controller=controller) as client:
+            client.post("/api/actions/backfill", json={"since": "2026-06-01"})
+            client.post("/api/actions/jobs/backfill/cancel")
+            again = client.post("/api/actions/backfill", json={"since": "2026-07-01"})
+            assert again.json()["accepted"] is True
+            client.post("/api/actions/jobs/backfill/cancel")
+        assert len(discovery.calls) == 2
+
+    async def test_cancelling_something_that_is_not_running_is_not_an_error(self, database, config):
+        with _client(database, config=config) as client:
+            response = client.post("/api/actions/jobs/discovery/cancel")
+            assert response.status_code == 200
+            assert response.json()["cancelled"] is False
+
+    async def test_only_known_jobs_can_be_cancelled(self, database, config):
+        with _client(database, config=config) as client:
+            assert client.post("/api/actions/jobs/rm-rf/cancel").status_code == 404
+
+    async def test_the_page_offers_a_stop_control_for_each_job(self, database, config):
+        with _client(database, config=config) as client:
+            page = client.get("/").text
+        for name in ("discovery", "refresh"):
+            assert f'data-cancel="{name}"' in page
+        assert "bf-cancel" in page
+
+
 async def test_a_backdate_refuses_an_unknown_collector(database, config):
     controller = MonitorController(_FakeScheduler(), _noop, _noop, sources=["search", "facebook"])
     with _client(database, config=config, controller=controller) as client:

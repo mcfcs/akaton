@@ -99,6 +99,14 @@ class EventRow(Base):
     # material_facts drops `description` before hashing, and a description-derived fact
     # would perturb every material_hash and version every event.
     content_prefix_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Fields an operator corrected by hand, as name -> value. A refresh re-reads the
+    # source page every 24 hours and would otherwise put the wrong value straight back,
+    # so a correction has to be pinned to survive. Released one field at a time.
+    manual_overrides: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Archived events drop out of the dashboard, are skipped by RefreshJob and can never
+    # alert again. Archiving rather than deleting because seven tables reference this row
+    # with no cascade, and `notifications` is the delivery audit trail.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

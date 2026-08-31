@@ -39,6 +39,7 @@ from akaton.processing.dedup import (
     is_same_announcement,
 )
 from akaton.processing.editions import dates_contradict, editions_conflict
+from akaton.processing.edits import FIELDS, ROW_FIELDS, apply_overrides
 from akaton.processing.leads import LeadState, lead_key
 from akaton.processing.leads import is_due as is_lead_due
 from akaton.processing.normalize import normalize_url
@@ -330,7 +331,11 @@ class Repository:
                 EventSourceRow.event_id == event.id
             )
         )
-        facts = extraction.facts
+        # Pinned corrections go back on before anything else looks at the facts, so the
+        # material hash reflects what will actually be stored. A page edit that only
+        # touches a pinned field therefore produces no new version and no change alert,
+        # which is what "pinned" has to mean.
+        facts = apply_overrides(extraction.facts, event.manual_overrides or {})
         digest = stable_hash(material_facts(facts))
         await self.attach_source(event, snapshot, authority=authority)
         if digest == event.material_hash or authority < int(max_authority or 0):
@@ -389,6 +394,95 @@ class Repository:
             rows.append(row)
         await self.session.flush()
         return rows
+
+    async def apply_manual_edit(self, event: EventRow, edits: dict[str, Any]) -> list[str]:
+        """Correct an event by hand and pin what was corrected.
+
+        Goes through the same versioning path as an automatic update — a new
+        `EventVersionRow`, `detect_changes` into `EventChangeRow` — so the history stays
+        complete and shows that a person did this. Returns the field names that actually
+        changed, which is empty when the submitted values already matched.
+        """
+        before = EventFacts.model_validate(event.current_facts)
+        facts = before.model_copy(deep=True)
+        overrides = dict(event.manual_overrides or {})
+        touched: list[str] = []
+
+        for name, value in edits.items():
+            if name in ROW_FIELDS:
+                if getattr(event, name) != value:
+                    setattr(event, name, value)
+                    touched.append(name)
+                continue
+            spec = FIELDS[name]
+            if spec.read(facts) == value and name in overrides:
+                continue
+            spec.write(facts, value)
+            overrides[name] = value
+            touched.append(name)
+
+        if not touched:
+            return []
+
+        digest = stable_hash(material_facts(facts))
+        changes = detect_changes(before, facts)
+        event.manual_overrides = overrides
+        event.current_facts = facts.model_dump(mode="json")
+        event.title = facts.title or event.title
+        event.normalized_title = facts.normalized_title or event.normalized_title
+        event.organizer = facts.organizer
+        event.organizer_normalized = facts.organizer_normalized
+        event.category = facts.category.value
+        event.canonical_url = (
+            normalize_url(facts.canonical_url) if facts.canonical_url else event.canonical_url
+        )
+        event.registration_url = (
+            normalize_url(facts.registration_url)
+            if facts.registration_url
+            else event.registration_url
+        )
+        event.edition_key = facts.edition_key
+        event.edition_year = facts.edition_year
+        event.material_hash = digest
+        event.current_version += 1
+        self.session.add(
+            EventVersionRow(
+                event_id=event.id,
+                version=event.current_version,
+                facts_json=event.current_facts,
+                evidence_json=[],
+                material_hash=digest,
+                extraction_version="manual",
+            )
+        )
+        for change in changes:
+            self.session.add(
+                EventChangeRow(
+                    event_id=event.id,
+                    change_type=change.change_type.value,
+                    field_name=change.field,
+                    before_json=json.loads(json.dumps(change.before, default=str)),
+                    after_json=json.loads(json.dumps(change.after, default=str)),
+                    # A person already knows what they just typed.
+                    notify=False,
+                )
+            )
+        await self.session.flush()
+        return touched
+
+    async def release_override(self, event: EventRow, field: str) -> bool:
+        """Hand a field back to automatic extraction. The value stays until next refresh."""
+        overrides = dict(event.manual_overrides or {})
+        if field not in overrides:
+            return False
+        overrides.pop(field)
+        event.manual_overrides = overrides
+        await self.session.flush()
+        return True
+
+    async def set_archived(self, event: EventRow, archived: bool) -> None:
+        event.archived_at = datetime.now(UTC) if archived else None
+        await self.session.flush()
 
     async def reserve_notification(
         self, payload: NotificationPayload, *, event_change_id: int | None = None

@@ -23,7 +23,11 @@ class RefreshJob:
                         select(EventRow).where(
                             EventRow.event_phase.in_(
                                 ["ANNOUNCED", "UPCOMING", "ONGOING", "POSTPONED", "UNKNOWN"]
-                            )
+                            ),
+                            # An archived event was judged wrong by a person. Re-reading
+                            # its page would keep it alive, and a material change would
+                            # put it back in front of them as an alert.
+                            EventRow.archived_at.is_(None),
                         )
                     )
                 ).all()

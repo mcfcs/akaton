@@ -14,6 +14,7 @@ from sqlalchemy import String, func, select
 from akaton.config import ConfigBundle
 from akaton.dashboard.actions import build_manual_payload, record_manual_notification
 from akaton.dashboard.runtime import BotController, MonitorController
+from akaton.domain.models import EventFacts
 from akaton.persistence.database import Database
 from akaton.persistence.models import (
     CandidateRow,
@@ -21,7 +22,31 @@ from akaton.persistence.models import (
     LeadRow,
     NotificationRow,
     SearchRunRow,
+    SourceSnapshotRow,
 )
+from akaton.persistence.repository import Repository
+from akaton.processing.edits import EditError, current_values, parse_edits
+from akaton.processing.leads import LeadState, lead_key
+from akaton.processing.mentions import canonical_token
+
+# Jobs the dashboard may stop. Named rather than free-form so a typo cannot cancel
+# something that is not a job, and so the set is visible in one place.
+CANCELLABLE_JOBS = frozenset({"discovery", "refresh", "backfill"})
+
+
+class EditRequest(BaseModel):
+    """A hand correction. Field names are validated against `processing.edits.EDITABLE`."""
+
+    fields: dict[str, object]
+
+
+class LeadEditRequest(BaseModel):
+    """`exclude_unset` is what makes this a patch: an omitted field is left alone."""
+
+    name: str | None = None
+    edition_hint: str | None = None
+    state: str | None = None
+    resolved_url: str | None = None
 
 
 class BackfillRequest(BaseModel):
@@ -42,6 +67,7 @@ def create_dashboard(
     *,
     bot: BotController | None = None,
     notifier=None,
+    reprocess=None,
 ) -> FastAPI:
     app = FastAPI(title="Akaton Monitor", docs_url=None, redoc_url=None)
     bot = bot or BotController()
@@ -104,15 +130,18 @@ def create_dashboard(
         }
 
     @app.get("/api/events", dependencies=secured)
-    async def events(limit: Annotated[int, Query(ge=1, le=100)] = 30) -> list[dict]:
+    async def events(
+        limit: Annotated[int, Query(ge=1, le=100)] = 30,
+        archived: Annotated[bool, Query()] = False,
+    ) -> list[dict]:
+        query = select(EventRow).order_by(EventRow.updated_at.desc())
+        # Archived events are hidden by default; `?archived=true` is how you find one to
+        # restore, so archiving is never a one-way door.
+        query = query.where(
+            EventRow.archived_at.is_not(None) if archived else EventRow.archived_at.is_(None)
+        )
         async with database.session() as session:
-            rows = list(
-                (
-                    await session.scalars(
-                        select(EventRow).order_by(EventRow.updated_at.desc()).limit(limit)
-                    )
-                ).all()
-            )
+            rows = list((await session.scalars(query.limit(limit))).all())
         return [_event(row) for row in rows]
 
     @app.get("/api/candidates", dependencies=secured)
@@ -221,6 +250,149 @@ def create_dashboard(
             ),
         }
 
+    async def _event_or_404(session, event_id: int) -> EventRow:
+        row = await session.get(EventRow, event_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"No event {event_id}")
+        return row
+
+    @app.patch("/api/events/{event_id}", dependencies=secured)
+    async def edit_event(event_id: int, request: EditRequest) -> dict[str, object]:
+        """Correct an event by hand. Corrected fields are pinned against the next refresh."""
+        try:
+            edits = parse_edits(request.fields)
+        except EditError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        async with database.session() as session:
+            row = await _event_or_404(session, event_id)
+            changed = await Repository(session).apply_manual_edit(row, edits)
+            payload = _event(row)
+        return {
+            "changed": changed,
+            "event": payload,
+            "message": (f"Updated {', '.join(changed)}" if changed else "Nothing to change"),
+        }
+
+    @app.delete("/api/events/{event_id}", dependencies=secured)
+    async def archive_event(event_id: int) -> dict[str, object]:
+        """Archive rather than delete: notifications already sent still reference this row."""
+        async with database.session() as session:
+            row = await _event_or_404(session, event_id)
+            await Repository(session).set_archived(row, True)
+            title = row.title
+        return {"archived": True, "message": f"Archived “{title[:60]}”"}
+
+    @app.post("/api/events/{event_id}/restore", dependencies=secured)
+    async def restore_event(event_id: int) -> dict[str, object]:
+        async with database.session() as session:
+            row = await _event_or_404(session, event_id)
+            await Repository(session).set_archived(row, False)
+            title = row.title
+        return {"archived": False, "message": f"Restored “{title[:60]}”"}
+
+    @app.delete("/api/events/{event_id}/overrides/{field}", dependencies=secured)
+    async def release_override(event_id: int, field: str) -> dict[str, object]:
+        """Hand one field back to automatic extraction."""
+        async with database.session() as session:
+            row = await _event_or_404(session, event_id)
+            released = await Repository(session).release_override(row, field)
+        if not released:
+            raise HTTPException(status_code=404, detail=f"{field} is not pinned")
+        return {
+            "released": field,
+            "message": f"{field} follows the source page again from the next refresh",
+        }
+
+    @app.patch("/api/leads/{lead_id}", dependencies=secured)
+    async def edit_lead(lead_id: int, request: LeadEditRequest) -> dict[str, object]:
+        """Fix a badly extracted competition name, which is the common case."""
+        async with database.session() as session:
+            row = await session.get(LeadRow, lead_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"No lead {lead_id}")
+            changed = []
+            for name, value in request.model_dump(exclude_unset=True).items():
+                if getattr(row, name) != value:
+                    setattr(row, name, value)
+                    changed.append(name)
+            if "name" in changed:
+                # The key is derived from the name, so correcting the name has to re-key
+                # the lead or the cooldown would still be keyed to the wrong spelling.
+                row.normalized_name = " ".join(
+                    canonical_token(token) for token in (row.name or "").split()
+                )
+                row.lead_key = lead_key(row.normalized_name, row.edition_hint)
+            payload = _lead(row)
+        return {"changed": changed, "lead": payload, "message": f"Updated lead {lead_id}"}
+
+    @app.post("/api/leads/{lead_id}/search-now", dependencies=secured)
+    async def search_lead_now(lead_id: int) -> dict[str, object]:
+        """Clear the cooldown so the next discovery run spends a search on this lead."""
+        async with database.session() as session:
+            row = await session.get(LeadRow, lead_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"No lead {lead_id}")
+            row.last_searched_at = None
+            row.search_runs = 0
+            row.state = LeadState.NEW
+            name = row.name
+        return {"message": f"“{name[:50]}” will be searched on the next run"}
+
+    @app.delete("/api/leads/{lead_id}", dependencies=secured)
+    async def delete_lead(lead_id: int) -> dict[str, object]:
+        """A lead is a work item, not a record of delivery, so this really deletes."""
+        async with database.session() as session:
+            row = await session.get(LeadRow, lead_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"No lead {lead_id}")
+            name = row.name
+            await session.delete(row)
+        return {"deleted": lead_id, "message": f"Deleted “{name[:50]}”"}
+
+    @app.delete("/api/candidates/{candidate_id}", dependencies=secured)
+    async def delete_candidate(candidate_id: int) -> dict[str, object]:
+        async with database.session() as session:
+            row = await session.get(CandidateRow, candidate_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"No candidate {candidate_id}")
+            # Snapshots are owned by the candidate and have no meaning without it.
+            for snapshot in await session.scalars(
+                select(SourceSnapshotRow).where(SourceSnapshotRow.candidate_id == candidate_id)
+            ):
+                await session.delete(snapshot)
+            await session.delete(row)
+        return {"deleted": candidate_id, "message": f"Deleted candidate {candidate_id}"}
+
+    @app.post("/api/candidates/{candidate_id}/retry", status_code=202, dependencies=secured)
+    async def retry_candidate(candidate_id: int) -> dict[str, object]:
+        """Put a rejected page back through the pipeline, usually after a rule changed."""
+        if reprocess is None:
+            raise HTTPException(status_code=409, detail="No pipeline is attached")
+        async with database.session() as session:
+            row = await session.get(CandidateRow, candidate_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"No candidate {candidate_id}")
+            url, title, snippet = row.discovered_url, row.title, row.snippet
+            row.retry_at = None
+            row.rejection_reasons = []
+        outcome = await reprocess(url, title, snippet)
+        return {
+            "state": outcome.state,
+            "reason": outcome.reason,
+            "message": f"Re-ran candidate {candidate_id}: {outcome.state}",
+        }
+
+    @app.post("/api/actions/jobs/{name}/cancel", dependencies=secured)
+    async def cancel_job(name: str) -> dict[str, object]:
+        """Stop a running discovery, refresh or backdate."""
+        if name not in CANCELLABLE_JOBS:
+            raise HTTPException(status_code=404, detail=f"No job named {name}")
+        cancelled = await controller.cancel(name)
+        return {
+            "cancelled": cancelled,
+            "message": f"{name} cancelled" if cancelled else f"{name} was not running",
+        }
+
     @app.post("/api/actions/bot/start", dependencies=secured)
     async def bot_start() -> dict[str, object]:
         if not bot.configured:
@@ -324,6 +496,13 @@ def _event(row: EventRow) -> dict:
         "deadline": facts.get("registration_deadline", {}).get("value"),
         "event_start": facts.get("event_start", {}).get("value"),
         "updated_at": row.updated_at.isoformat(),
+        # Which fields a person corrected, so the edit form can show a pin and offer to
+        # release it, and the values the form should start from.
+        "pinned": sorted(row.manual_overrides or {}),
+        "editable": current_values(EventFacts.model_validate(row.current_facts))
+        if row.current_facts
+        else {},
+        "archived_at": row.archived_at.isoformat() if row.archived_at else None,
     }
 
 
@@ -385,7 +564,9 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
       <input id="token" type="password" placeholder="Dashboard token (optional)"
         class="w-56 rounded-lg border border-edge bg-panel px-3 py-2 text-sm placeholder:text-emerald-200/30 focus:border-mint focus:outline-none">
       <button data-act="discover" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Run discovery</button>
+      <button data-cancel="discovery" hidden class="rounded-lg border border-rose/50 bg-panel px-3 py-2 text-sm font-semibold text-rose hover:border-rose">Stop discovery</button>
       <button data-act="refresh" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Refresh events</button>
+      <button data-cancel="refresh" hidden class="rounded-lg border border-rose/50 bg-panel px-3 py-2 text-sm font-semibold text-rose hover:border-rose">Stop refresh</button>
       <button data-sched="start" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Start monitor</button>
       <button data-sched="pause" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint">Pause</button>
       <span class="mx-1 h-6 w-px bg-edge"></span>
@@ -411,6 +592,7 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
         <div id="bf-sources" class="mt-1 flex flex-wrap gap-2"></div>
       </div>
       <button id="bf-run" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-mint disabled:cursor-not-allowed disabled:opacity-50">Run backdate</button>
+      <button id="bf-cancel" hidden class="rounded-lg border border-rose/50 bg-panel px-3 py-2 text-sm font-semibold text-rose hover:border-rose">Cancel</button>
     </div>
     <div id="bf-status" class="mt-3 flex flex-wrap items-center gap-2 text-xs text-emerald-200/60"></div>
   </section>
@@ -455,17 +637,23 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
     <div class="overflow-x-auto"><table class="w-full min-w-[820px] text-sm">
       <thead><tr class="border-b border-edge text-left text-xs uppercase tracking-wide text-emerald-200/50">
         <th class="pb-2 pr-3">Name</th><th class="pb-2 pr-3">Where</th><th class="pb-2 pr-3">State</th>
-        <th class="pb-2 pr-3 text-right">Seen</th><th class="pb-2">Resolved to</th></tr></thead>
+        <th class="pb-2 pr-3 text-right">Seen</th><th class="pb-2 pr-3">Resolved to</th>
+        <th class="pb-2 text-right">Actions</th></tr></thead>
       <tbody id="leads"></tbody></table></div>
   </section>
 
   <section class="mt-4 rounded-xl border border-edge bg-panel/90 p-5">
-    <h2 class="mb-3 text-base font-semibold">Accepted events</h2>
-    <div class="overflow-x-auto"><table class="w-full min-w-[820px] text-sm">
+    <div class="mb-3 flex items-center justify-between gap-3">
+      <h2 class="text-base font-semibold">Accepted events</h2>
+      <label class="flex cursor-pointer items-center gap-1.5 text-xs text-emerald-200/60">
+        <input id="show-archived" type="checkbox" class="accent-mint"> show archived
+      </label>
+    </div>
+    <div class="overflow-x-auto"><table class="w-full min-w-[900px] text-sm">
       <thead><tr class="border-b border-edge text-left text-xs uppercase tracking-wide text-emerald-200/50">
         <th class="pb-2 pr-3">Competition</th><th class="pb-2 pr-3">Category</th><th class="pb-2 pr-3">Location</th>
         <th class="pb-2 pr-3">Deadline</th><th class="pb-2 pr-3">Reg.</th><th class="pb-2 pr-3 text-right">Score</th>
-        <th class="pb-2 text-right">Alert</th></tr></thead>
+        <th class="pb-2 text-right">Actions</th></tr></thead>
       <tbody id="events"></tbody></table></div>
   </section>
 
@@ -480,12 +668,25 @@ tailwind.config = {darkMode:'class', theme:{extend:{colors:{
     <div id="reasons" class="mt-3 flex flex-wrap gap-2"></div>
     <div class="mt-4 overflow-x-auto"><table class="w-full min-w-[820px] text-sm">
       <thead><tr class="border-b border-edge text-left text-xs uppercase tracking-wide text-emerald-200/50">
-        <th class="pb-2 pr-3">Page</th><th class="pb-2 pr-3">State</th><th class="pb-2 pr-3">Reasons</th><th class="pb-2">Last step</th></tr></thead>
+        <th class="pb-2 pr-3">Page</th><th class="pb-2 pr-3">State</th><th class="pb-2 pr-3">Reasons</th>
+        <th class="pb-2 pr-3">Last step</th><th class="pb-2 text-right">Actions</th></tr></thead>
       <tbody id="candidates"></tbody></table></div>
   </section>
 </main>
 
 <div id="toast" class="pointer-events-none fixed bottom-6 right-6 hidden rounded-lg border border-mint bg-emerald-900/90 px-4 py-2.5 text-sm shadow-xl"></div>
+
+<div id="modal" hidden class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+  <div class="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-xl border border-edge bg-panel p-5 shadow-2xl">
+    <h2 id="modal-title" class="text-base font-semibold"></h2>
+    <p id="modal-hint" class="mb-4 mt-1 text-xs text-emerald-200/50"></p>
+    <div id="modal-body" class="space-y-3"></div>
+    <div class="mt-5 flex justify-end gap-2">
+      <button id="modal-cancel" class="rounded-lg border border-edge bg-panel px-3 py-2 text-sm font-semibold hover:border-edge/80">Cancel</button>
+      <button id="modal-save" class="rounded-lg border border-mint bg-mint/10 px-3 py-2 text-sm font-semibold text-mint hover:bg-mint/20">Save</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -536,6 +737,7 @@ document.querySelectorAll('[data-bot]').forEach((b) => b.onclick = async () => {
   finally { b.disabled = false; setTimeout(load, 1200); }
 });
 $('clear-filter').onclick = () => { filter = null; load(); };
+$('show-archived').onchange = () => load();
 
 // The collector list comes from the server, so the picker offers exactly the adapters
 // this deployment enabled rather than a list that drifts from config/sources.yaml.
@@ -581,12 +783,23 @@ $('bf-run').onclick = async () => {
   finally { setTimeout(load, 800); }
 };
 
+async function cancelJob(name) {
+  try { const d = await api('/api/actions/jobs/' + name + '/cancel', {method: 'POST'}); toast(d.message); }
+  catch (e) { toast(e.message); }
+  finally { setTimeout(load, 600); }
+}
+$('bf-cancel').onclick = () => cancelJob('backfill');
+document.querySelectorAll('[data-cancel]').forEach((b) => b.onclick = () => cancelJob(b.dataset.cancel));
+
+const STATUS_CLASS = {SUCCEEDED: 'bg-mint/15 text-mint', FAILED: 'bg-rose/15 text-rose',
+                      CANCELLED: 'bg-amber/15 text-amber'};
 function renderBackfill(monitor) {
   const running = Boolean((monitor.running || {}).backfill);
   const run = (monitor.last_runs || {}).backfill;
   const button = $('bf-run');
   button.disabled = running;
   button.textContent = running ? 'Running…' : 'Run backdate';
+  $('bf-cancel').hidden = !running;
   const box = $('bf-status'); box.replaceChildren();
   if (!run) { box.append(chip('No backdate run yet', 'text-emerald-200/40')); return; }
   const started = new Date(run.started_at).toLocaleTimeString();
@@ -595,8 +808,7 @@ function renderBackfill(monitor) {
     box.append(chip('collectors keep working while you watch', 'text-emerald-200/40'));
     return;
   }
-  const failed = run.status === 'FAILED';
-  box.append(chip(run.status, failed ? 'bg-rose/15 text-rose' : 'bg-mint/15 text-mint'));
+  box.append(chip(run.status, STATUS_CLASS[run.status] || 'bg-white/5 text-emerald-200/70'));
   box.append(chip('started ' + started, 'text-emerald-200/50'));
   if (run.error) box.append(chip(run.error, 'text-rose/80'));
   for (const [key, value] of Object.entries(run.result || {})) {
@@ -639,27 +851,114 @@ function renderEvents(rows) {
     rt.append(chip(e.registration || 'UNKNOWN', e.registration === 'OPEN' ? 'bg-emerald-500/15 text-mint' : 'bg-white/5 text-emerald-200/60'));
     tr.append(rt);
     tr.append(cell(e.score, 'text-right font-bold'));
-    tr.append(sendCell(e));
+    tr.append(eventActions(e));
     body.append(tr);
   }
 }
 
-function sendCell(event) {
+const SMALL_BUTTON = 'rounded-lg border border-edge bg-panel px-2.5 py-1 text-xs font-semibold hover:border-mint disabled:opacity-40';
+const DANGER_BUTTON = 'rounded-lg border border-edge bg-panel px-2.5 py-1 text-xs font-semibold text-rose/80 hover:border-rose disabled:opacity-40';
+
+function actionCell(buttons) {
   const td = document.createElement('td');
-  td.className = 'py-2 text-right align-top';
-  const button = el('button', 'Send', 'rounded-lg border border-edge bg-panel px-2.5 py-1 text-xs font-semibold hover:border-mint disabled:opacity-40');
-  button.title = 'Post this event to Discord now, ignoring the score threshold';
+  td.className = 'py-2 text-right align-top whitespace-nowrap';
+  for (const b of buttons) { b.classList.add('ml-1'); td.append(b); }
+  return td;
+}
+
+// One helper for every destructive or mutating row button: disable while it runs, report
+// what came back, and reload. Written once so no row control can forget to do it.
+function rowButton(label, cls, handler, title) {
+  const button = el('button', label, cls);
+  if (title) button.title = title;
   button.onclick = async () => {
     button.disabled = true;
     const original = button.textContent;
-    button.textContent = 'Sending…';
-    try { const d = await api('/api/actions/events/' + event.id + '/notify', {method: 'POST'}); toast(d.message); button.textContent = 'Sent'; }
-    catch (e) { toast(e.message); button.textContent = original; button.disabled = false; }
-    finally { setTimeout(load, 1500); }
+    button.textContent = '…';
+    try { const d = await handler(); if (d && d.message) toast(d.message); }
+    catch (e) { toast(e.message); }
+    finally { button.textContent = original; button.disabled = false; setTimeout(load, 500); }
   };
-  td.append(button);
-  return td;
+  return button;
 }
+
+function eventActions(event) {
+  return actionCell([
+    rowButton('Send', SMALL_BUTTON,
+      () => api('/api/actions/events/' + event.id + '/notify', {method: 'POST'}),
+      'Post this event to Discord now, ignoring the score threshold'),
+    rowButton('Edit', SMALL_BUTTON, async () => { openEventEditor(event); }, 'Correct this event by hand'),
+    rowButton(event.archived_at ? 'Restore' : 'Archive', DANGER_BUTTON, () =>
+      event.archived_at
+        ? api('/api/events/' + event.id + '/restore', {method: 'POST'})
+        : api('/api/events/' + event.id, {method: 'DELETE'}),
+      'Archived events are hidden and can never alert again, but are never deleted'),
+  ]);
+}
+
+// The edit form. A modal rather than inline fields so a mis-click cannot write.
+const EVENT_FIELDS = [
+  ['title', 'Title', 'text'], ['organizer', 'Organizer', 'text'],
+  ['category', 'Category', 'text'], ['city', 'City', 'text'], ['country', 'Country', 'text'],
+  ['event_start', 'Event start', 'date'], ['registration_deadline', 'Deadline', 'date'],
+  ['canonical_url', 'Official URL', 'url'], ['registration_url', 'Registration URL', 'url'],
+];
+
+function openEventEditor(event) {
+  const pinned = new Set(event.pinned || []);
+  const values = event.editable || {};
+  const form = $('modal-body'); form.replaceChildren();
+  const inputs = {};
+  for (const [name, label, type] of EVENT_FIELDS) {
+    const wrap = document.createElement('label');
+    wrap.className = 'block text-xs text-emerald-200/60';
+    const head = document.createElement('div');
+    head.className = 'mb-1 flex items-center gap-2';
+    head.append(document.createTextNode(label));
+    if (pinned.has(name)) {
+      const release = el('button', 'pinned ✕', 'rounded-full bg-amber/15 px-2 py-0.5 text-[10px] text-amber');
+      release.type = 'button';
+      release.title = 'Release this field back to the source page';
+      release.onclick = async () => {
+        try { const d = await api('/api/events/' + event.id + '/overrides/' + name, {method: 'DELETE'}); toast(d.message); closeModal(); setTimeout(load, 400); }
+        catch (e) { toast(e.message); }
+      };
+      head.append(release);
+    }
+    wrap.append(head);
+    const input = document.createElement('input');
+    input.type = type === 'date' ? 'date' : 'text';
+    let value = values[name] == null ? '' : String(values[name]);
+    if (type === 'date' && value) value = value.slice(0, 10);
+    input.value = value;
+    input.className = 'w-full rounded-lg border border-edge bg-panel px-3 py-2 text-sm text-emerald-50 focus:border-mint focus:outline-none';
+    wrap.append(input);
+    inputs[name] = {input, original: value};
+    form.append(wrap);
+  }
+  $('modal-title').textContent = 'Edit event ' + event.id;
+  $('modal-hint').textContent = 'Only fields you change are pinned. A pinned field is not overwritten when the source page is re-read.';
+  $('modal-save').onclick = async () => {
+    const fields = {};
+    for (const [name, {input, original}] of Object.entries(inputs)) {
+      if (input.value !== original) fields[name] = input.value;
+    }
+    if (!Object.keys(fields).length) { closeModal(); return; }
+    try {
+      const d = await api('/api/events/' + event.id, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({fields}),
+      });
+      toast(d.message); closeModal(); setTimeout(load, 400);
+    } catch (e) { toast(e.message); }
+  };
+  $('modal').hidden = false;
+}
+
+function closeModal() { $('modal').hidden = true; }
+$('modal-cancel').onclick = closeModal;
+$('modal').onclick = (e) => { if (e.target === $('modal')) closeModal(); };
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
 const LEAD_STATE_CLASS = {
   RESOLVED: 'bg-mint/15 text-mint',
@@ -692,8 +991,44 @@ function renderLeads(rows) {
     const shown = lead.resolved_url ? lead.resolved_url.replace(/^https?:[/][/]/, '') : '';
     tr.append(lead.resolved_url ? link(shown.slice(0, 60), lead.resolved_url)
                                 : cell('—', 'text-emerald-200/40'));
+    tr.append(actionCell([
+      rowButton('Rename', SMALL_BUTTON, async () => { openLeadEditor(lead); },
+        'Fix a badly extracted name; the lead is re-keyed so the cooldown follows it'),
+      rowButton('Search now', SMALL_BUTTON,
+        () => api('/api/leads/' + lead.id + '/search-now', {method: 'POST'}),
+        'Clear the cooldown so the next discovery run spends a search on this'),
+      rowButton('Delete', DANGER_BUTTON, () => api('/api/leads/' + lead.id, {method: 'DELETE'})),
+    ]));
     body.append(tr);
   }
+}
+
+function openLeadEditor(lead) {
+  const form = $('modal-body'); form.replaceChildren();
+  const inputs = {};
+  for (const [name, label] of [['name', 'Name'], ['edition_hint', 'Edition hint']]) {
+    const wrap = document.createElement('label');
+    wrap.className = 'block text-xs text-emerald-200/60';
+    wrap.append(document.createTextNode(label));
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = lead[name] == null ? '' : String(lead[name]);
+    input.className = 'mt-1 w-full rounded-lg border border-edge bg-panel px-3 py-2 text-sm text-emerald-50 focus:border-mint focus:outline-none';
+    wrap.append(input); inputs[name] = input; form.append(wrap);
+  }
+  $('modal-title').textContent = 'Edit lead ' + lead.id;
+  $('modal-hint').textContent = 'Renaming re-keys the lead, so its cooldown follows the corrected name rather than the misspelling.';
+  $('modal-save').onclick = async () => {
+    const body = {};
+    for (const [name, input] of Object.entries(inputs)) body[name] = input.value || null;
+    try {
+      const d = await api('/api/leads/' + lead.id, {
+        method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+      });
+      toast(d.message); closeModal(); setTimeout(load, 400);
+    } catch (e) { toast(e.message); }
+  };
+  $('modal').hidden = false;
 }
 
 function renderReasons(counts) {
@@ -715,7 +1050,7 @@ function renderCandidates(rows) {
   $('clear-filter').classList.toggle('hidden', !filter);
   if (!rows.length) {
     const tr = document.createElement('tr'); const td = cell('Nothing recorded yet.', 'text-emerald-200/50');
-    td.colSpan = 4; tr.append(td); body.append(tr); return;
+    td.colSpan = 5; tr.append(td); body.append(tr); return;
   }
   for (const c of rows) {
     const tr = document.createElement('tr'); tr.className = 'border-b border-edge/50';
@@ -726,6 +1061,12 @@ function renderCandidates(rows) {
     tr.append(cell((c.rejection_reasons || []).join(', ').replaceAll('_', ' ') || '—', 'text-rose/80 text-xs'));
     const step = c.last_trace ? (c.last_trace.state + (c.last_trace.failure ? ' · ' + c.last_trace.failure : '')) : '—';
     tr.append(cell(step, 'text-xs text-emerald-200/50'));
+    tr.append(actionCell([
+      rowButton('Retry', SMALL_BUTTON,
+        () => api('/api/candidates/' + c.id + '/retry', {method: 'POST'}),
+        'Put this page back through the pipeline, usually after a rule changed'),
+      rowButton('Delete', DANGER_BUTTON, () => api('/api/candidates/' + c.id, {method: 'DELETE'})),
+    ]));
     body.append(tr);
   }
 }
@@ -733,8 +1074,9 @@ function renderCandidates(rows) {
 async function load() {
   try {
     const candidateUrl = '/api/candidates?limit=60' + (filter ? '&reason=' + encodeURIComponent(filter) : '');
+    const eventsUrl = '/api/events' + ($('show-archived').checked ? '?archived=true' : '');
     const [s, ev, cand, rej, searches, leads] = await Promise.all([
-      api('/api/status'), api('/api/events'), api(candidateUrl), api('/api/rejections'), api('/api/searches'), api('/api/leads')
+      api('/api/status'), api(eventsUrl), api(candidateUrl), api('/api/rejections'), api('/api/searches'), api('/api/leads')
     ]);
     renderLeads(leads);
     $('k-candidates').textContent = s.counts.candidates;
@@ -751,6 +1093,10 @@ async function load() {
       : bot.state === 'NOT_CONFIGURED' ? 'no Discord token configured' : 'not connected';
     renderSources(s.monitor.sources || ['search']);
     renderBackfill(s.monitor);
+    // A stop button only exists while there is something to stop.
+    for (const b of document.querySelectorAll('[data-cancel]')) {
+      b.hidden = !(s.monitor.running || {})[b.dataset.cancel];
+    }
     const next = (s.monitor.jobs || []).map((j) => j.next_run_at).filter(Boolean).sort()[0];
     $('k-next').textContent = next ? 'next ' + new Date(next).toLocaleTimeString() : 'no job scheduled';
     $('subtitle').textContent = s.configuration.search_provider + ' search · ' + s.configuration.llm_provider +

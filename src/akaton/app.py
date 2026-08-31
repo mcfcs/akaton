@@ -21,6 +21,7 @@ from akaton.discovery.facebook_parse import groups_from_config
 from akaton.discovery.resolver import LeadResolver
 from akaton.discovery.searxng import SearXNGSearchProvider
 from akaton.discovery.shreddit import DEFAULT_SUBREDDITS, DEFAULT_TERMS, ShredditSource
+from akaton.domain.models import CandidateSeed
 from akaton.fetch.browser import PatchrightRenderer
 from akaton.fetch.http import HttpFetcher
 from akaton.fetch.manager import FetchManager
@@ -181,6 +182,23 @@ def _scheduler(
     return scheduler
 
 
+def _reprocessor(pipeline: CandidatePipeline):
+    """Run one URL back through the pipeline, for the dashboard's Retry button."""
+
+    async def reprocess(url: str, title: str | None, snippet: str | None):
+        return await pipeline.process(
+            CandidateSeed(
+                url=url,
+                title=title,
+                snippet=snippet,
+                discovery_channel="manual",
+                provider="dashboard",
+            )
+        )
+
+    return reprocess
+
+
 def _web_server(
     config: ConfigBundle,
     database: Database,
@@ -188,8 +206,11 @@ def _web_server(
     *,
     bot: BotController | None = None,
     notifier=None,
+    reprocess=None,
 ) -> uvicorn.Server:
-    application = create_dashboard(database, controller, config, bot=bot, notifier=notifier)
+    application = create_dashboard(
+        database, controller, config, bot=bot, notifier=notifier, reprocess=reprocess
+    )
     server_config = uvicorn.Config(
         application,
         host=config.runtime.dashboard_host,
@@ -249,7 +270,7 @@ async def _dashboard(config: ConfigBundle) -> None:
     controller = MonitorController(
         scheduler, discovery.run, refresh.run, sources=_source_names(discovery)
     )
-    server = _web_server(config, database, controller)
+    server = _web_server(config, database, controller, reprocess=_reprocessor(pipeline))
     try:
         await server.serve()
     finally:
@@ -297,7 +318,14 @@ async def _run(config: ConfigBundle) -> None:
     controller = MonitorController(
         scheduler, discovery.run, refresh.run, sources=_source_names(discovery)
     )
-    server = _web_server(config, database, controller, bot=bot_controller, notifier=notifier)
+    server = _web_server(
+        config,
+        database,
+        controller,
+        bot=bot_controller,
+        notifier=notifier,
+        reprocess=_reprocessor(pipeline),
+    )
     await bot_controller.start()
     try:
         # The dashboard is what keeps the process alive, so stopping the bot from it

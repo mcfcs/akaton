@@ -133,6 +133,21 @@ class MonitorController:
         self.tasks[name] = asyncio.create_task(self._run(name, job), name=f"akaton-{name}")
         return True
 
+    async def cancel(self, name: str) -> bool:
+        """Stop a running job. False when nothing of that name is running.
+
+        A backdate over Facebook and Reddit runs for minutes in a headed browser, so
+        there has to be a way to call it off. The collectors close their browser in a
+        `finally`, which cancellation still runs, so Chrome does not survive the cancel.
+        """
+        task = self.tasks.get(name)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        return True
+
     async def _run(self, name: str, job: Callable[[], Awaitable[dict[str, int]]]) -> None:
         record: dict[str, Any] = {
             "started_at": datetime.now(UTC).isoformat(),
@@ -142,6 +157,12 @@ class MonitorController:
         try:
             record["result"] = await job()
             record["status"] = "SUCCEEDED"
+        except asyncio.CancelledError:
+            # CancelledError derives from BaseException, so `except Exception` below never
+            # saw it: a cancelled job used to sit at RUNNING forever, which also meant the
+            # single-flight guard would never let another one start.
+            record["status"] = "CANCELLED"
+            raise
         except Exception as exc:
             record["status"] = "FAILED"
             record["error"] = type(exc).__name__
