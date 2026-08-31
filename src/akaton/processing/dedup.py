@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 
-from rapidfuzz.fuzz import ratio
+from rapidfuzz.fuzz import ratio, token_set_ratio
 
 from akaton.domain.models import EventFacts
-from akaton.processing.normalize import normalize_organizer, normalize_title, normalize_url
+from akaton.processing.normalize import (
+    normalize_organizer,
+    normalize_text,
+    normalize_title,
+    normalize_url,
+)
 
 
 @dataclass(frozen=True)
@@ -14,6 +20,49 @@ class MatchDecision:
     action: str
     score: int
     reasons: tuple[str, ...]
+
+
+# One announcement reaches the group several times: posted, shared from the organiser's
+# page, reposted by a member. A real run produced three candidates for one DOST event on
+# three different URLs, so URL identity cannot see them.
+#
+# Two are byte-identical for a while and the third prepends a clause, which shifts every
+# token. A prefix hash catches the first pair cheaply; the third needs a similarity
+# measure. Measured on that scrape, the three duplicates score 92-97 against each other
+# while the highest-scoring pair of genuinely different events reaches only 68, so 85
+# sits in a wide gap rather than on a guess.
+PREFIX_TOKENS = 24
+CONTENT_DUPLICATE_RATIO = 85
+
+
+def content_prefix_hash(text: str | None) -> str | None:
+    """Stable key for the opening of an announcement. Catches verbatim reposts."""
+    # normalize_text folds case and Unicode and strips punctuation, so a repost that
+    # differs only in styling hashes the same.
+    tokens = normalize_text(text).split()[:PREFIX_TOKENS]
+    if len(tokens) < 4:
+        return None
+    return hashlib.sha256(" ".join(tokens).encode("utf-8")).hexdigest()[:32]
+
+
+def content_similarity(left: str | None, right: str | None) -> float:
+    """0-100 similarity, order- and duplication-insensitive.
+
+    token_set_ratio is used rather than a plain ratio because the same announcement gets
+    an introduction bolted on when it is shared, and comparing token sets ignores that.
+    """
+    first, second = normalize_text(left), normalize_text(right)
+    if not first or not second:
+        return 0.0
+    return float(token_set_ratio(first, second))
+
+
+def is_same_announcement(left: str | None, right: str | None) -> bool:
+    return content_similarity(left, right) >= CONTENT_DUPLICATE_RATIO
+
+
+def fingerprint_text(facts: EventFacts) -> str:
+    return " ".join(part for part in (facts.title, facts.description) if part)
 
 
 def compare_events(left: EventFacts, right: EventFacts) -> MatchDecision:

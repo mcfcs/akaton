@@ -48,6 +48,7 @@ from akaton.discovery.facebook_parse import (
 )
 from akaton.domain.models import CandidateSeed
 from akaton.fetch.proxy import ProxyManager
+from akaton.processing.dedup import content_prefix_hash
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,11 @@ class FacebookGroupSource:
             cutoff = max(cutoff, since)
         self.last_posts = []
         seeds: dict[str, CandidateSeed] = {}
+        # One announcement is often posted, shared from the organiser's page, and
+        # reposted by a member, all within the same feed. Collapsing them here means the
+        # pipeline never sees three candidates for one event; the stored fingerprint
+        # still handles copies that arrive on a later run.
+        seen_content: set[str] = set()
         async with async_playwright() as playwright:
             session = _BrowserSession(self, playwright)
             try:
@@ -269,7 +275,13 @@ class FacebookGroupSource:
                             provider=self.name,
                             query=group.name,
                         ):
-                            seeds.setdefault(str(seed.url), seed)
+                            digest = content_prefix_hash(seed.content or seed.title)
+                            if digest and digest in seen_content:
+                                continue
+                            if str(seed.url) not in seeds:
+                                seeds[str(seed.url)] = seed
+                                if digest:
+                                    seen_content.add(digest)
             finally:
                 await session.close()
         logger.info("facebook_discovered", extra={"seeds": len(seeds)})

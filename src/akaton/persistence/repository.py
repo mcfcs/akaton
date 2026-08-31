@@ -28,8 +28,22 @@ from akaton.persistence.models import (
     SourceSnapshotRow,
 )
 from akaton.processing.changes import detect_changes
-from akaton.processing.dedup import compare_events
+from akaton.processing.dedup import (
+    compare_events,
+    content_prefix_hash,
+    fingerprint_text,
+    is_same_announcement,
+)
 from akaton.processing.normalize import normalize_url
+
+# A repost can trail the original by weeks. Beyond this the pair is more likely to be a
+# recurring event's next run, which the edition check would separate anyway.
+CONTENT_MATCH_WINDOW_DAYS = 180
+
+
+def _edition_compatible(row: EventRow, facts: EventFacts) -> bool:
+    """Never merge two runs of an annual series that happen to share their wording."""
+    return not (row.edition_year and facts.edition_year and row.edition_year != facts.edition_year)
 
 
 def stable_hash(value: Any) -> str:
@@ -134,6 +148,49 @@ class Repository:
                 return found
         return None
 
+    async def find_by_content_fingerprint(self, facts: EventFacts) -> EventRow | None:
+        """Find an event already stored under a different URL.
+
+        The same announcement reaches a group several times — posted, shared from the
+        organiser's page, reposted by a member — and each copy has its own URL, so
+        `find_exact_event` cannot see them. A prefix hash catches verbatim reposts with
+        an index lookup; a share with an introduction bolted on needs the similarity
+        check over recent events.
+        """
+        text = fingerprint_text(facts)
+        digest = content_prefix_hash(text)
+        if not digest:
+            return None
+        matches = list(
+            (
+                await self.session.scalars(
+                    select(EventRow).where(EventRow.content_prefix_hash == digest).limit(20)
+                )
+            ).all()
+        )
+        for found in matches:
+            if _edition_compatible(found, facts):
+                return found
+
+        cutoff = datetime.now(UTC) - timedelta(days=CONTENT_MATCH_WINDOW_DAYS)
+        recent = list(
+            (
+                await self.session.scalars(
+                    select(EventRow)
+                    .where(EventRow.last_seen_at >= cutoff)
+                    .order_by(EventRow.last_seen_at.desc())
+                    .limit(500)
+                )
+            ).all()
+        )
+        for found in recent:
+            if not _edition_compatible(found, facts):
+                continue
+            stored = EventFacts.model_validate(found.current_facts)
+            if is_same_announcement(text, fingerprint_text(stored)):
+                return found
+        return None
+
     async def candidate_events(self, facts: EventFacts) -> list[EventRow]:
         query = select(EventRow)
         if facts.organizer_normalized:
@@ -175,6 +232,7 @@ class Repository:
             relevance_score=relevance_score,
             confidence_score=extraction.overall_confidence,
             material_hash=digest,
+            content_prefix_hash=content_prefix_hash(fingerprint_text(facts)),
             last_verified_at=datetime.now(UTC),
         )
         self.session.add(row)
@@ -272,6 +330,7 @@ class Repository:
         event.confidence_score = extraction.overall_confidence
         event.current_version = next_version
         event.material_hash = digest
+        event.content_prefix_hash = content_prefix_hash(fingerprint_text(facts))
         event.last_verified_at = datetime.now(UTC)
         self.session.add(
             EventVersionRow(

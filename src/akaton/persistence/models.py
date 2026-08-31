@@ -94,6 +94,11 @@ class EventRow(Base):
     confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     material_hash: Mapped[str] = mapped_column(String(64))
+    # Hash of the announcement's opening words, so the same event reposted under another
+    # URL is recognised. Derived, so it lives here rather than in EventFacts:
+    # material_facts drops `description` before hashing, and a description-derived fact
+    # would perturb every material_hash and version every event.
+    content_prefix_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

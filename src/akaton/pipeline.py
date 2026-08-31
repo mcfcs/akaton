@@ -256,6 +256,11 @@ class CandidatePipeline:
 
             event = await repo.find_exact_event(extraction.facts)
             if not event:
+                # URL identity, then content identity, then fuzzy title/organizer. The
+                # middle rung is what catches one announcement reposted under several
+                # URLs, which the outer two cannot see.
+                event = await repo.find_by_content_fingerprint(extraction.facts)
+            if not event:
                 possible = await repo.candidate_events(extraction.facts)
                 for existing in possible:
                     match = compare_events(

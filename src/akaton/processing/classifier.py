@@ -68,11 +68,16 @@ def classify_category(text: str) -> CompetitionCategory:
 
 def classify_document(text: str) -> DocumentKind:
     lowered = fold_text(text).casefold()
-    if any(term in lowered for term in RESULT_TERMS):
-        return DocumentKind.WINNER_ANNOUNCEMENT
-    if any(term in lowered for term in RECAP_TERMS):
-        return DocumentKind.PAST_EVENT_RECAP
-    if "results" in lowered and not any(term in lowered for term in ACTION_TERMS):
+    # A live call for entries can still describe what the winners get: "cash prizes await
+    # the winning teams" is a promise, not a result. An explicit call to action settles
+    # the tense, the same way it already does for the bare word "results" below.
+    forward_looking = any(term in lowered for term in ACTION_TERMS)
+    if not forward_looking:
+        if any(term in lowered for term in RESULT_TERMS):
+            return DocumentKind.WINNER_ANNOUNCEMENT
+        if any(term in lowered for term in RECAP_TERMS):
+            return DocumentKind.PAST_EVENT_RECAP
+    if "results" in lowered and not forward_looking:
         return DocumentKind.RESULTS_POST
     if "webinar" in lowered and "competition" not in lowered and "hackathon" not in lowered:
         return DocumentKind.WEBINAR
