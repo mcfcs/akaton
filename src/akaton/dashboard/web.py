@@ -636,6 +636,12 @@ DASHBOARD_HTML = """<!doctype html>
 tailwind.config = {darkMode:'class', theme:{extend:{colors:{
   ink:'#08110f', panel:'#0f1e19', edge:'#224036', mint:'#51d88a', amber:'#f4bc62', rose:'#ff7a7a', sky:'#69b7ff'}}}}
 </script>
+<style>
+/* The `hidden` attribute is only `display:none` in the user-agent stylesheet, so any
+   Tailwind display utility beats it. The modal is `hidden class="... flex ..."`, and
+   `display:flex` won: it sat open over the whole page from the moment it loaded. */
+[hidden] { display: none !important; }
+</style>
 </head>
 <body class="bg-ink text-emerald-50 antialiased" style="background:radial-gradient(circle at 80% -10%, #17392d 0, #08110f 42%);min-height:100vh">
 <main class="mx-auto max-w-[1500px] p-6 lg:p-8">
@@ -812,6 +818,7 @@ function link(text, href) {
   a.href = href || '#'; a.target = '_blank'; a.rel = 'noreferrer';
   a.className = 'font-semibold text-sky hover:underline'; td.append(a); return td;
 }
+function el(tag, text, cls) { const n = document.createElement(tag); n.textContent = text; n.className = cls || ''; return n; }
 function chip(text, cls) { const s = document.createElement('span'); s.textContent = text; s.className = 'inline-block rounded-full px-2 py-0.5 text-[11px] ' + cls; return s; }
 
 document.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
@@ -1063,7 +1070,7 @@ function renderLeads(rows) {
   if (!rows.length) {
     const tr = document.createElement('tr');
     const td = cell('No mentions recorded yet', 'text-emerald-200/50');
-    td.colSpan = 5; tr.append(td); body.append(tr); return;
+    td.colSpan = 6; tr.append(td); body.append(tr); return;
   }
   for (const lead of rows) {
     const tr = document.createElement('tr');
