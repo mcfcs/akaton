@@ -236,6 +236,33 @@ because in practice it is a private Tailscale address. Akaton invokes it only wh
 extraction is ambiguous. Set
 `LLM_PROVIDER=disabled` to use deterministic extraction exclusively.
 
+### Not re-reading what has already been judged
+
+Search returns the same URLs every run. Measured on a real database, 97 of 364 candidates
+had been fetched more than once — 491 fetches for 364 pages — and the most repeated was a
+Facebook group URL fetched **seven times**, rejected identically each time because
+`config/domains.yaml` disables fetching that host. No amount of asking changes that answer.
+
+A candidate is now re-fetched only when the answer could plausibly differ, and how long
+that takes depends on why it was dropped:
+
+| situation | what happens |
+| --- | --- |
+| already an event | left to `RefreshJob`, which re-reads it on its own cadence |
+| rejected on the *host or kind of page* — blocked domain, unlisted domain, foreign event, results post | `candidate_settled_recheck_days`, default 30 |
+| rejected on *what the page had not said yet* — thin confidence, unconfirmed registration | `candidate_recheck_days`, default 7 |
+| fetch failed | unchanged; `retry_at` already governs those with its own backoff |
+
+On the same database that is **307 of 364 skipped, 84% fewer fetches**, while every page is
+still re-examined eventually. Three things deliberately ignore the cooldown, because each
+exists *in order to* re-read a page: `RefreshJob`, the dashboard's **Retry** button, and any
+backdate. The sighting is still recorded either way — `last_seen_at` moves, so you can see
+a URL keeps coming back without paying to fetch it again.
+
+The cooldown reads the last verdict out of the candidate's trace rather than `updated_at`,
+because recording a sighting touches the row: `updated_at` would be pushed forward by
+exactly the URLs that keep reappearing, and their cooldown would never expire.
+
 ### Telling a news article from an event page
 
 A university or agency news article about a competition is mostly *about the competition*: it names

@@ -39,6 +39,7 @@ from akaton.processing.llm import (
     should_escalate,
     should_use_llm,
 )
+from akaton.processing.recheck import recheck_reason
 from akaton.processing.relevance import is_plausibly_relevant, looks_like_old_news
 from akaton.processing.scorer import score_event
 from akaton.processing.verifier import verify_event
@@ -146,6 +147,17 @@ class CandidatePipeline:
                     candidate.event_id,
                     "retry_not_due",
                 )
+            # The same URLs come back from search run after run. `upsert_candidate` has
+            # already recorded that we saw this one again; if we have judged it recently
+            # there is nothing further to learn by fetching it a fourth or seventh time.
+            skip = recheck_reason(
+                candidate,
+                channel=seed.discovery_channel,
+                historical_test=historical_test,
+                config=self.config,
+            )
+            if skip:
+                return PipelineOutcome(candidate.id, candidate.state, candidate.event_id, skip)
             candidate.retry_at = None
             await repo.transition_candidate(candidate, CandidateState.NORMALIZED)
             # The search result's own headline can already say the competition is over.

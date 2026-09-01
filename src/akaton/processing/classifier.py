@@ -162,10 +162,29 @@ ACTION_TERMS = (
     "registration now open",
     "applications are now open",
     "applications now open",
+    # "Registration is open until August 21" is how a great many announcements are
+    # actually written, and none of the phrasings above match it. A real Henkel
+    # Philippines Hackathon post was read correctly as a hackathon and then dropped,
+    # because with no action term the document was never REGISTRATION_OPEN and so the
+    # registration state stayed UNKNOWN, which fails the verifier's registration gate.
+    "registration is open",
+    "registration open until",
+    "applications are open",
+    "applications open until",
+    "open for registration",
+    "now accepting",
+    "accepting applications",
+    "accepting entries",
+    "accepting registrations",
+    "sign ups are open",
+    "sign-ups are open",
     "register now",
     "apply now",
     "registration deadline",
     "form your team",
+    # Kept as a signal even though the query that searched for it was removed: the
+    # problem was searching for the classifier's own evidence, not recognising the phrase
+    # when an announcement genuinely uses it.
     "calling all students",
 )
 

@@ -50,6 +50,18 @@ DATE_LABELS = {
         "registration deadline",
         "applications close",
         "registration closes",
+        # The same phrasing the action terms had to learn. Without it a post saying
+        # "Registration is open until August 21" has no deadline at all, so it stays
+        # open forever instead of closing on the day it says.
+        "registration is open until",
+        "registration open until",
+        "applications open until",
+        "open until",
+        "apply until",
+        "register until",
+        "submissions close",
+        "entries close",
+        "last day to register",
         "deadline",
     ),
     "event_start": ("event date", "hackathon date", "starts on", "competition date"),
@@ -123,6 +135,30 @@ def extract_labeled_dates(text: str, published: datetime | None = None) -> dict[
 # Defined in processing.locale, which also knows the neighbouring countries, and
 # re-exported here because this is where callers have always imported it from.
 PH_TERMS = locale.PH_TERMS
+
+
+def _combined_text(context: DocumentContext) -> str:
+    """Title, snippet and body as one string, without repeating any of them.
+
+    Folded once here so the date regexes, location and eligibility matching all see
+    ASCII. Social posts arrive in mathematical-bold, where 𝟮𝟬𝟮𝟲 defeats \\b20\\d{2}\\b.
+
+    A prefetched social seed takes its title from the first line of its own text, so
+    joining the two blindly printed the opening twice and pushed everything after it
+    ~150 characters later. That is not cosmetic: `_context_year` only looks for a year in
+    the first 300 characters, and on a real Henkel post the duplication moved "2026" to
+    character 302 — so the deadline it did find had no year and stayed unusable.
+    """
+    parts: list[str] = []
+    for value in (context.title, context.snippet, context.text):
+        folded = fold_text(value or "").strip()
+        if not folded or any(folded in existing for existing in parts):
+            continue
+        # The body normally arrives last and contains the title it was taken from, so a
+        # part the new value already covers is dropped rather than kept alongside it.
+        parts = [existing for existing in parts if existing not in folded]
+        parts.append(folded)
+    return "\n".join(parts)
 
 
 SOCIAL_IMAGE_KEYS = ("og:image", "og:image:secure_url", "twitter:image", "twitter:image:src")
@@ -290,7 +326,7 @@ def extract_deterministically(
     now = now or datetime.now(UTC)
     # Folded once here so the date regexes, location and eligibility matching all see
     # ASCII. Social posts arrive in mathematical-bold, where 𝟮𝟬𝟮𝟲 defeats \b20\d{2}\b.
-    combined = fold_text("\n".join(filter(None, (context.title, context.snippet, context.text))))
+    combined = _combined_text(context)
     dates = extract_labeled_dates(combined, published)
     title = context.title or context.metadata.get("og:title") or context.metadata.get("title")
     organizer = context.metadata.get("organizer") or context.metadata.get("author")

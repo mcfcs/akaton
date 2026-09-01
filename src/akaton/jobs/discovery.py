@@ -191,7 +191,14 @@ class DiscoveryJob:
             counts["leads"] += await self._record_mentions(adapter)
             if adapter_error:
                 continue
-            discovered, processed, failed = await self._process_seeds(seeds)
+            # The same mode as the search path. Backdating Facebook to June and then
+            # applying today's past-event and deadline gates to what comes back defeats
+            # the point: a Henkel hackathon whose registration closed on 21 August was
+            # found in the group, correctly read as a hackathon, and dropped on the
+            # registration gate — during a backdate that was supposed to relax it.
+            discovered, processed, failed = await self._process_seeds(
+                seeds, historical_test=historical_test
+            )
             counts["candidates"] += discovered
             counts["processed"] += processed
             counts["errors"] += failed

@@ -67,6 +67,11 @@ class AppSettings(BaseModel):
     # The fallback host is shared and reloads models between callers — measured at 5.8,
     # 16.1 and 39.9 seconds. Without a cap, a run of thin pages would serialise dozens.
     llm_escalations_per_run: int = Field(default=5, ge=0)
+    # How long before a page we already judged is worth fetching again. A rejection about
+    # the host or the kind of page settles for much longer than one about a page that was
+    # merely thin when we read it.
+    candidate_recheck_days: int = Field(default=7, ge=0)
+    candidate_settled_recheck_days: int = Field(default=30, ge=0)
     refresh_interval_hours: int = Field(default=24, ge=1)
     notification_threshold: int = Field(default=65, ge=0, le=100)
     high_priority_threshold: int = Field(default=80, ge=0, le=100)

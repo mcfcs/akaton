@@ -31,6 +31,13 @@ llm_escalation_confidence: 0.70
 # model between callers, which was measured at 5.8, 16.1 and 39.9 seconds, so a run of
 # thin pages would otherwise serialise dozens of those.
 llm_escalations_per_run: 5
+# Search returns the same URLs every run. A page already judged is re-fetched only after
+# this long, so a run spends its fetches on pages it has not seen. A rejection about the
+# host or the kind of page (a blocked domain, a results post) settles for longer than one
+# about a page that was simply thin when we read it. A backdate ignores both, and the
+# dashboard's Retry button forces one immediately.
+candidate_recheck_days: 7
+candidate_settled_recheck_days: 30
 refresh_interval_hours: 24
 notification_threshold: 65
 high_priority_threshold: 80
