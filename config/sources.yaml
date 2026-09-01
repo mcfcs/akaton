@@ -1,3 +1,8 @@
+# Each organizer may carry an optional `logo:` — a URL to its mark, shown beside the
+# organizer's name at the top of a Discord alert. Without one, Akaton falls back to the
+# site's own /favicon.ico, which is usually present and always on the organizer's own
+# domain, so nothing here tells a third party what Akaton is looking at. Discord fetches
+# the image server-side and simply shows nothing if it 404s, so a wrong guess is free.
 organizers:
   - id: dict
     name: Department of Information and Communications Technology

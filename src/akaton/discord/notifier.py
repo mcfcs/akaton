@@ -40,7 +40,11 @@ class DiscordNotifier:
         async for message in channel.history(limit=limit):
             if message.author.id != self.client.user.id:  # type: ignore[union-attr]
                 continue
-            if any(embed.footer and embed.footer.text == token for embed in message.embeds):
+            # Substring, not equality: the footer also carries the relevance tier and
+            # confidence for the reader. The token is unique enough to identify the
+            # message on its own, and this keeps how the footer *reads* independent of
+            # what it is *for*.
+            if any(embed.footer and token in (embed.footer.text or "") for embed in message.embeds):
                 return str(message.id)
         return None
 

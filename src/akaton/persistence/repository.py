@@ -86,8 +86,15 @@ def stable_hash(value: Any) -> str:
 
 
 def material_facts(facts: EventFacts) -> dict[str, Any]:
+    """The facts a change is judged on. Presentation is excluded.
+
+    `description` and `image_url` are how the event is shown, not what it is. Hashing
+    them would version every event whenever a site reworded its blurb or swapped its
+    banner, and each of those versions would be checked for change notifications.
+    """
     value = facts.model_dump(mode="json")
     value.pop("description", None)
+    value.pop("image_url", None)
     return value
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 from akaton.domain.enums import (
@@ -123,6 +123,23 @@ def extract_labeled_dates(text: str, published: datetime | None = None) -> dict[
 # Defined in processing.locale, which also knows the neighbouring countries, and
 # re-exported here because this is where callers have always imported it from.
 PH_TERMS = locale.PH_TERMS
+
+
+SOCIAL_IMAGE_KEYS = ("og:image", "og:image:secure_url", "twitter:image", "twitter:image:src")
+
+
+def _social_image(context: DocumentContext) -> str | None:
+    """The page's own share image, which for a competition is usually its poster.
+
+    `extract_html` already keeps every meta tag, so this costs nothing extra. Whether the
+    image is safe to *show* is decided later against the same host trust the links use —
+    this only records what the page claims.
+    """
+    for key in SOCIAL_IMAGE_KEYS:
+        value = str(context.metadata.get(key) or "").strip()
+        if value.lower().startswith(("http://", "https://")):
+            return urljoin(context.url, value)
+    return None
 
 
 def is_philippine_host(url: str | None) -> bool:
@@ -302,6 +319,7 @@ def extract_deterministically(
         eligibility=extract_eligibility(combined),
         canonical_url=normalize_url(context.url),
         registration_url=registration,
+        image_url=_social_image(context),
         document_kind=kind,
         topics=[
             term

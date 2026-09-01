@@ -160,6 +160,10 @@ class EventFacts(BaseModel):
     prize_currency: str | None = None
     canonical_url: str | None = None
     registration_url: str | None = None
+    # The page's own og:image, which for a competition is almost always its poster or
+    # banner. Presentational, so `material_facts` drops it before hashing: a redesigned
+    # banner is not a material change to the event and must not version it or alert.
+    image_url: str | None = None
     document_kind: DocumentKind = DocumentKind.AMBIGUOUS
     event_phase: EventPhase = EventPhase.UNKNOWN
     registration_state: RegistrationState = RegistrationState.UNKNOWN
@@ -245,6 +249,20 @@ class NotificationPayload(BaseModel):
     source_url: str | None = None
     links_field: str | None = None
     evidence_note: str | None = None
+    # The organizer, shown as the embed's author line with its logo rather than as one
+    # more row in a stack of fields.
+    author_name: str | None = None
+    author_icon_url: str | None = None
+    author_url: str | None = None
+    # Already judged against host trust where the sources config is available, exactly as
+    # `official_url_clickable` is, so a re-render on the reconciliation path cannot reach
+    # a different verdict about what is safe to display.
+    image_url: str | None = None
+    # Carried as datetimes, not preformatted strings, so the renderer can emit Discord's
+    # own timestamp markup — which shows each reader the date in their timezone and a
+    # live countdown, and which must not be markdown-escaped like scraped text is.
+    event_start: datetime | None = None
+    deadline: datetime | None = None
 
 
 class DeliveryReceipt(BaseModel):

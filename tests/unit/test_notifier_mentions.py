@@ -59,4 +59,6 @@ async def test_embed_still_carries_the_event_detail():
     embed = channel.sent["embed"]
     assert embed.title == "ImaGnation 2026"
     assert embed.url == "https://gcash.com/imagnation"
-    assert embed.footer.text == "tok"
+    # The footer also carries the relevance tier and confidence for the reader, so the
+    # token is contained rather than equal — which is how reconciliation matches it too.
+    assert "tok" in embed.footer.text

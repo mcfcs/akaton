@@ -429,6 +429,37 @@ fallback and is used only when `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and `OPE
 configured. Source text is treated as untrusted data, typed output is required, and claimed
 evidence must occur in the fetched source.
 
+### What an alert looks like
+
+Every fact used to be a full-width field, so nine rows stacked into a single column and
+most of them read "Not specified". The layout now is:
+
+- the **organizer** as the embed's author line, with its logo — taken from an optional
+  `logo:` on the organizer in `config/sources.yaml`, else that site's own `/favicon.ico`;
+- the **title**, linked to the official page only when that host is trusted;
+- a two-to-three sentence **summary**;
+- the page's own **banner** (`og:image`), which for a competition is usually its poster;
+- a compact grid of short facts, three to a row — event date, registration deadline and
+  location first, because those are what the reader is deciding on;
+- longer fields (eligibility, why it matched, links, source) below, full width;
+- relevance and confidence in the **footer**, where they no longer cost two field slots.
+
+Dates use Discord's own timestamp markup, so each reader sees them in their own timezone
+with a live countdown — "5 October 2026 (in 34 days)" — rather than Manila time baked into
+the text. **A fact that is not known is omitted**, not printed as "Not specified".
+
+Two trust rules keep the presentation honest, and they are the same ones the links already
+follow. An **image is a link the reader cannot inspect before it renders**, so a banner is
+shown only when its host would be trusted for a link — a Facebook post's `fbcdn` image is
+refused, which means social alerts carry no picture. A **logo** is only fetched from a host
+that already clears the authority gate, so an arbitrary scraped domain cannot put its
+artwork in the channel. Both verdicts are decided where the sources config is available and
+carried on the payload, exactly as `official_url_clickable` is, so the reconciliation path
+cannot re-render to a different conclusion.
+
+Scraped text is still markdown-escaped; text this renderer generates is not, which is what
+makes the timestamp markup work.
+
 ## Getting the required credentials
 
 ### Discord
