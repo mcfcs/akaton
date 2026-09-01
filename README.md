@@ -307,6 +307,37 @@ evidence that a page is a live call for entries. Searching for the classifier's 
 guaranteed every result would look actionable whatever its subject; it returned both tourism
 contests.
 
+### Reading the organizers, not just searching for them
+
+Search finds Philippine announcements constantly and cannot read a single one of them. On
+a real run, **62 of the 134 candidates rejected as `SEARCH_SNIPPET_ONLY` were
+facebook.com pages** — `wearegcash`, `DICTgovph`, `DICTRegion12`, `DTI.CIG`,
+`AteneoBCGBlueCaseCompetition`, `devconlegazpi`, `SIKAPTala`. The GCash post announcing
+ImaGnation was among them: found, then discarded, because `config/domains.yaml` disables
+HTTP fetch of facebook.com and the adapter only read the philhacks *group*.
+
+So the adapter now reads organizer **pages** as well. A page is the same DOM as a group —
+a `[role="feed"]` of `[role="article"]` elements — behind a different URL, so the
+collector treats both alike; only the URL building and one policy differ. Every page in
+`config/sources.yaml` was seen posting a Philippine competition in search results the
+monitor had already collected, and each slug was confirmed to resolve.
+
+This matters more than leads do, because it needs nobody to mention anything. A lead only
+exists once someone posts about a competition; a page is read whether or not anyone has.
+
+**Comments are never expanded on a page.** In a group that is the whole point — someone
+asks, someone else replies with the real listing — but an organizer's timeline is mostly
+marketing, which classifies as `unrelated`, and `unrelated` is one of the kinds that opens
+a thread. Every marketing post would have spent a permalink and several seconds reading
+replies that say nothing. A page is therefore much cheaper to read than the group: one
+page load each.
+
+A run that reads a group plus a dozen pages adds a couple of minutes of browser time. If
+that is too much for a six-hour cadence, `discovery_interval_hours: 24` is a reasonable
+setting for this domain — a hackathon deadline is weeks away, not minutes — but raise
+`discovery_queries_per_run` to match, or the search rotation only gets a quarter of the
+slots it is sized for.
+
 ### Mentions: when a post names a competition without linking to it
 
 Most competition talk in a group is not an announcement. Someone asks whether one is coming up,

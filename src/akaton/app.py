@@ -18,7 +18,7 @@ from akaton.discord.notifier import DiscordNotifier, reconcile_pending_notificat
 from akaton.discovery.adapters import DevpostAdapter, KaggleAdapter
 from akaton.discovery.brave import BraveSearchProvider
 from akaton.discovery.facebook import FacebookGroupSource
-from akaton.discovery.facebook_parse import groups_from_config
+from akaton.discovery.facebook_parse import groups_from_config, pages_from_config
 from akaton.discovery.resolver import LeadResolver
 from akaton.discovery.searxng import SearXNGSearchProvider
 from akaton.discovery.shreddit import DEFAULT_SUBREDDITS, DEFAULT_TERMS, ShredditSource
@@ -123,6 +123,7 @@ def _source_adapters(config: ConfigBundle, fetcher: FetchManager):
                 proxies=getattr(fetcher, "proxies", None),
                 profile_dir=config.root / facebook.get("profile_dir", "data/.facebook-profile"),
                 groups=groups_from_config(facebook),
+                pages=pages_from_config(facebook),
                 headless=bool(facebook.get("headless", False)),
                 max_age_days=int(facebook.get("max_age_days", 90)),
                 login_wait_seconds=float(facebook.get("login_wait_seconds", 0)),

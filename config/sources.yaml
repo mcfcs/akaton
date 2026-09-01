@@ -195,4 +195,39 @@ structured_sources:
       - url: https://www.facebook.com/groups/philhacks/
         name: philhacks
         location: Philippines
+    # Organizer pages, read with the same headed browser as the group above.
+    #
+    # This is where Philippine organizations actually announce, and search finds those
+    # posts constantly without being able to read any of them: on one real run, 62 of the
+    # 134 candidates rejected as SEARCH_SNIPPET_ONLY were facebook.com pages — including
+    # the GCash post announcing ImaGnation, which is why that competition was found and
+    # then thrown away. Reading the page directly needs no one to mention it first.
+    #
+    # Every entry below was seen posting a Philippine competition in the search results
+    # the monitor had already collected, and each slug was confirmed to resolve. Add or
+    # remove freely; the cost is roughly one page load each per run, and comments are not
+    # expanded on pages, so a page is far cheaper to read than the group.
+    pages:
+      - url: https://www.facebook.com/wearegcash          # GCash — ImaGnation
+        name: GCash
+      - url: https://www.facebook.com/DICTgovph           # eGov Hackathon, Hack4Gov
+        name: DICT
+      - url: https://www.facebook.com/dostph              # DOST
+        name: DOST
+      - url: https://www.facebook.com/PAGASA.DOST.GOV.PH  # DOST-PAGASA
+        name: DOST-PAGASA
+      - url: https://www.facebook.com/DTI.CIG             # DTI Competitiveness and Innovation
+        name: DTI-CIG
+      - url: https://www.facebook.com/upsystem            # University of the Philippines
+        name: UP
+      - url: https://www.facebook.com/SIKAPTala           # national CS/IT competition
+        name: SIKAPTala
+      - url: https://www.facebook.com/AteneoBCGBlueCaseCompetition
+        name: Blue Case Competition
+      - url: https://www.facebook.com/devconlegazpi       # DEVCON
+        name: DEVCON Legazpi
+      - url: https://www.facebook.com/undp.ph             # UNDP Philippines
+        name: UNDP Philippines
+      - url: https://www.facebook.com/ceissafpPage        # CEISSAFP ideathon
+        name: CEISSAFP
 

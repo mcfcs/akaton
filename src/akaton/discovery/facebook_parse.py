@@ -66,6 +66,8 @@ POST_ID_RE = re.compile(
 )
 COMMENT_ID_RE = re.compile(r"[?&]comment_id=(\d{5,}|fb_[0-9a-f]{8,})", re.IGNORECASE)
 GROUP_SLUG_RE = re.compile(r"facebook\.com/groups/([^/?#]+)", re.IGNORECASE)
+# A page slug is whatever follows the host, excluding the site's own sections.
+PAGE_SLUG_RE = re.compile(r"facebook\.com/(?!groups/)([^/?#]+)", re.IGNORECASE)
 
 # Meta's own account and security notices render into `[role="article"]` elements that
 # look exactly like comments to the DOM scraper. A real run captured "You're now using a
@@ -138,17 +140,35 @@ class FacebookPost:
     created_at: datetime | None = None
     comments: list[FacebookComment] = field(default_factory=list)
     comment_count: int = 0
+    # Which shape of target this came from, so a fallback permalink is built the right
+    # way round. Defaults to "group" because that is what every existing caller means.
+    kind: str = "group"
 
 
 @dataclass(frozen=True)
 class GroupTarget:
+    """Something on Facebook worth reading: a group's feed, or an organizer's page.
+
+    A page is the same DOM — `[role="feed"]` of `[role="article"]` elements — reached by a
+    different URL and without a Join button, so the collector treats both the same way and
+    only the URL builders differ.
+    """
+
     url: str
     name: str
     location: str = "Philippines"
+    kind: str = "group"
 
 
 def normalize_group_identifier(value: str) -> str:
     match = GROUP_SLUG_RE.search(value.strip())
+    if match:
+        return match.group(1).strip("/")
+    return value.strip().strip("/")
+
+
+def normalize_page_identifier(value: str) -> str:
+    match = PAGE_SLUG_RE.search(value.strip())
     if match:
         return match.group(1).strip("/")
     return value.strip().strip("/")
@@ -159,9 +179,26 @@ def group_feed_url(group: str) -> str:
     return f"https://www.facebook.com/groups/{slug}/?sorting_setting=CHRONOLOGICAL"
 
 
-def permalink_url(group: str, post_id: str, *, comment_id: str | None = None) -> str:
-    slug = normalize_group_identifier(group)
-    url = f"https://www.facebook.com/groups/{slug}/permalink/{post_id}/"
+def page_feed_url(page: str) -> str:
+    return f"https://www.facebook.com/{normalize_page_identifier(page)}"
+
+
+def feed_url(target: GroupTarget) -> str:
+    return page_feed_url(target.url) if target.kind == "page" else group_feed_url(target.url)
+
+
+def permalink_url(
+    group: str, post_id: str, *, comment_id: str | None = None, kind: str = "group"
+) -> str:
+    """A fallback link for a post whose own permalink the DOM did not give us.
+
+    A page's posts live at `/<page>/posts/<id>`, not `/groups/<slug>/permalink/<id>`, and
+    a link built the wrong way round resolves to nothing while still looking plausible.
+    """
+    if kind == "page":
+        url = f"https://www.facebook.com/{normalize_page_identifier(group)}/posts/{post_id}/"
+    else:
+        url = f"https://www.facebook.com/groups/{normalize_group_identifier(group)}/permalink/{post_id}/"
     if comment_id:
         return f"{url}?comment_id={comment_id}"
     return url
@@ -355,6 +392,14 @@ def mention_kind(text: str, urls: Iterable[str] | None = None) -> str:
 
 
 def needs_comment_expansion(post: FacebookPost) -> bool:
+    # Only in a group. Opening a thread is worth it there because that is the philhacks
+    # pattern — someone asks, someone else replies with the real listing. On an
+    # organizer's own page the announcement *is* the post, nobody drops a competing
+    # listing underneath it, and the timeline is mostly marketing that classifies as
+    # "unrelated" — which is one of the kinds below, so every one of those posts would
+    # spend a permalink and several seconds to read replies that say nothing.
+    if post.kind == "page":
+        return False
     kind = mention_kind(post.text, post.urls)
     # A question or teammate thread is exactly where a reply carries the real listing.
     # A recap, job or foreign post has nothing worth opening, and opening it would spend
@@ -557,7 +602,9 @@ def thread_to_seeds(
         elif comment_id.startswith("fb_"):
             comment_permalink = post.permalink
         else:
-            comment_permalink = permalink_url(post.group, post.post_id, comment_id=comment_id)
+            comment_permalink = permalink_url(
+                post.group, post.post_id, comment_id=comment_id, kind=post.kind
+            )
         take(
             _seeds_for_mention(
                 post=post,
@@ -603,7 +650,35 @@ def groups_from_config(raw: dict | None) -> tuple[GroupTarget, ...]:
     return tuple(groups)
 
 
-def post_from_dom(record: dict, group: str) -> FacebookPost | None:
+def pages_from_config(raw: dict | None) -> tuple[GroupTarget, ...]:
+    """Organizer pages to read, alongside the groups.
+
+    Search finds these constantly and cannot read any of them: of 134 candidates rejected
+    as SEARCH_SNIPPET_ONLY on one real run, 62 were facebook.com pages — including the
+    GCash post announcing ImaGnation. Reading them is the difference between finding an
+    announcement and merely knowing one exists.
+    """
+    pages: list[GroupTarget] = []
+    for item in (raw or {}).get("pages") or ():
+        if isinstance(item, str):
+            slug = normalize_page_identifier(item)
+            pages.append(GroupTarget(url=page_feed_url(slug), name=slug, kind="page"))
+            continue
+        url = str(item.get("url") or "")
+        if not url:
+            continue
+        pages.append(
+            GroupTarget(
+                url=page_feed_url(url),
+                name=str(item.get("name") or normalize_page_identifier(url)),
+                location=str(item.get("location") or "Philippines"),
+                kind="page",
+            )
+        )
+    return tuple(pages)
+
+
+def post_from_dom(record: dict, group: str, kind: str = "group") -> FacebookPost | None:
     hrefs = [str(item) for item in record.get("hrefs") or [] if item]
     permalink = (
         record.get("permalink")
@@ -617,7 +692,7 @@ def post_from_dom(record: dict, group: str) -> FacebookPost | None:
     if not post_id:
         post_id = _synthetic_comment_id(text)
     if not permalink:
-        permalink = permalink_url(group, post_id)
+        permalink = permalink_url(group, post_id, kind=kind)
     elif permalink.startswith("/"):
         permalink = f"https://www.facebook.com{permalink}"
     urls = extract_urls(text, hrefs)
@@ -627,15 +702,19 @@ def post_from_dom(record: dict, group: str) -> FacebookPost | None:
         comment_count = int(comment_count)
     except (TypeError, ValueError):
         comment_count = 0
+    identifier = (
+        normalize_page_identifier(group) if kind == "page" else normalize_group_identifier(group)
+    )
     return FacebookPost(
         post_id=post_id,
-        group=normalize_group_identifier(group),
+        group=identifier,
         permalink=permalink.split("?")[0],
         text=text,
         urls=urls,
         author=record.get("author"),
         created_at=created,
         comment_count=comment_count,
+        kind=kind,
     )
 
 
@@ -668,7 +747,7 @@ def comments_from_dom(records: Iterable[dict], post: FacebookPost) -> list[Faceb
                 author=record.get("author"),
                 created_at=parse_facebook_time(record.get("created_at")),
                 permalink=permalink
-                or permalink_url(post.group, post.post_id, comment_id=comment_id),
+                or permalink_url(post.group, post.post_id, comment_id=comment_id, kind=post.kind),
             )
         )
     return comments
@@ -851,7 +930,7 @@ def apply_graphql_records(post: FacebookPost, records: Iterable[dict[str, Any]])
                 created_at=parse_facebook_time(record.get("created_at")),
                 permalink=record.get("url")
                 if isinstance(record.get("url"), str)
-                else permalink_url(post.group, post.post_id, comment_id=comment_id),
+                else permalink_url(post.group, post.post_id, comment_id=comment_id, kind=post.kind),
             )
         )
     post.comments = merge_comments(post.comments, comments)

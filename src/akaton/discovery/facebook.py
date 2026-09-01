@@ -37,7 +37,7 @@ from akaton.discovery.facebook_parse import (
     GroupTarget,
     apply_graphql_records,
     comments_from_dom,
-    group_feed_url,
+    feed_url,
     groups_from_config,
     merge_comments,
     needs_comment_expansion,
@@ -204,6 +204,7 @@ class FacebookGroupSource:
         proxies: ProxyManager | None = None,
         profile_dir: Path | None = None,
         groups: tuple[GroupTarget, ...] | None = None,
+        pages: tuple[GroupTarget, ...] = (),
         headless: bool = False,
         max_age_days: int = 90,
         nav_timeout_ms: int = 45_000,
@@ -220,6 +221,9 @@ class FacebookGroupSource:
         self.proxies = proxies
         self.profile_dir = profile_dir or Path("data/.facebook-profile")
         self.groups = groups or DEFAULT_GROUPS
+        # Groups first: they are the densest source and the one a run must not miss if
+        # Facebook cuts the session short partway through.
+        self.targets = (*self.groups, *pages)
         self.headless = headless
         self.max_age_days = max_age_days
         self.nav_timeout_ms = nav_timeout_ms
@@ -273,7 +277,7 @@ class FacebookGroupSource:
                     logger.warning("facebook_not_logged_in")
                     self.last_error = "not logged in; run tools/facebook_login.py"
                     return []
-                for group in self.groups:
+                for group in self.targets:
                     await self._throttle()
                     posts = await session.collect_group(group)
                     permalinks_used = 0
@@ -575,17 +579,19 @@ class _BrowserSession:
                 return
 
     async def collect_group(self, group: GroupTarget) -> list[FacebookPost]:
-        url = group_feed_url(group.url)
-        html = await self.page_html(url, wait_for="feed")
+        html = await self.page_html(feed_url(group), wait_for="feed")
         if not html:
             return []
-        await self._join_group()
+        # A page has no Join button — clicking around looking for one only risks pressing
+        # something else. Reading a public page needs no membership anyway.
+        if group.kind != "page":
+            await self._join_group()
         await asyncio.sleep(2)
         await self._scroll_feed()
         records = await self._eval_posts()
         posts: dict[str, FacebookPost] = {}
         for record in records:
-            post = post_from_dom(record, group.name)
+            post = post_from_dom(record, group.name, group.kind)
             if post:
                 posts[post.post_id] = post
         for record in records_from_html(await self.page.content()) + records_from_graphql(
@@ -604,6 +610,7 @@ class _BrowserSession:
                         "created_at": record.get("created_at"),
                     },
                     group.name,
+                    group.kind,
                 )
                 if built:
                     posts.setdefault(built.post_id, built)
@@ -628,7 +635,7 @@ class _BrowserSession:
         if not post.text:
             records = await self._eval_posts()
             if records:
-                rebuilt = post_from_dom(records[0], post.group)
+                rebuilt = post_from_dom(records[0], post.group, post.kind)
                 if rebuilt:
                     post.text = rebuilt.text or post.text
                     post.urls = list(dict.fromkeys([*post.urls, *rebuilt.urls]))
