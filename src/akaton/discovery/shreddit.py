@@ -57,6 +57,28 @@ BLOCK_SNIPPETS = (
     "file a ticket",
 )
 RATE_LIMIT_SNIPPETS = ("too many requests", "err_http_response_code_failure", " 429 ")
+
+# Reddit's over-18 interstitial, which asks a logged-out visitor to confirm their age or
+# sign in. It is not a block: no proxy rotation, retry or wait will get past it, and the
+# only way through is to assert an age and log in, which the monitor has no business
+# doing. So it is detected and skipped.
+#
+# These have to be phrases the gate alone uses. `_page_text` includes the navigation bar,
+# where "Log in" appears on every Reddit page ever served, so anything about logging in
+# would match everywhere and silently skip the whole site. The button labels and the
+# age sentence are unique to the interstitial.
+GATE_SNIPPETS = (
+    "you must be 18",
+    "18+ to view",
+    "are you over 18",
+    "over 18 to view",
+    "yes, i'm over 18",
+    "no, take me back",
+    "this community is nsfw",
+    "nsfw content",
+    "adult content",
+    "mature content",
+)
 HYDRATE_WAIT_SECONDS = 20.0
 PERMALINK_RE = re.compile(r'href="(/r/[^"]+/comments/[^"?]+)"')
 
@@ -141,12 +163,16 @@ class ShredditSource:
         # See FacebookGroupSource.last_mentions.
         self.last_mentions: list[MentionLead] = []
         self.vocabulary = vocabulary or frozenset()
+        # Subreddits that turned out to need a login to read at all, so an operator can
+        # take them out of the config rather than paying for them every run.
+        self.gated_subreddits: list[str] = []
 
     async def discover(
         self, since: datetime | None = None, cursor: str | None = None
     ) -> list[CandidateSeed]:
         self.last_error = None
         self.last_mentions = []
+        self.gated_subreddits = []
         try:
             from patchright.async_api import async_playwright
         except ImportError:
@@ -158,7 +184,7 @@ class ShredditSource:
         if since:
             cutoff = max(cutoff, since)
         seeds: dict[str, CandidateSeed] = {}
-        searches = hits = 0
+        searches = hits = gated_posts = 0
         async with async_playwright() as playwright:
             session = _BrowserSession(self, playwright)
             try:
@@ -166,6 +192,13 @@ class ShredditSource:
                     for term in self.terms:
                         await self._throttle()
                         permalinks = await session.search_permalinks(search_url(subreddit, term))
+                        if session.last_state == "gated":
+                            # The subreddit itself is age-gated, so every remaining term
+                            # would hit the same wall. Abandon it rather than paying for
+                            # one navigation per term to be told the same thing.
+                            self.gated_subreddits.append(subreddit)
+                            logger.warning("shreddit_subreddit_gated", extra={"sub": subreddit})
+                            break
                         searches += 1
                         hits += len(permalinks)
                         logger.info(
@@ -177,6 +210,11 @@ class ShredditSource:
                                 continue
                             await self._throttle()
                             record = await session.post_record(permalink, subreddit)
+                            if session.last_state == "gated":
+                                # One post inside an otherwise readable subreddit. Skip
+                                # only this one and carry on with the rest.
+                                gated_posts += 1
+                                continue
                             if not record or not matches_terms(record, self.terms):
                                 continue
                             mention = _to_mention(record, self.name, self.vocabulary)
@@ -192,12 +230,26 @@ class ShredditSource:
                                 seeds.setdefault(str(seed.url), seed)
             finally:
                 await session.close()
-        if searches and not hits:
+        if not searches and self.gated_subreddits:
+            # Every configured subreddit is age-gated. Not a fault in the collector, but
+            # it does mean the run could never have found anything, and the fix is a
+            # configuration change rather than a retry — so it is worth surfacing.
+            self.last_error = "every subreddit is age-gated and needs a login: " + ", ".join(
+                self.gated_subreddits
+            )
+        elif searches and not hits:
             # Searching a busy subreddit for "hackathon" over 90 days always matches
             # something. Every search coming back empty means the result list never
             # rendered — a block or a challenge page — not that Reddit went quiet.
             self.last_error = f"no results from any of {searches} searches; likely blocked"
-        logger.info("shreddit_discovered", extra={"seeds": len(seeds)})
+        logger.info(
+            "shreddit_discovered",
+            extra={
+                "seeds": len(seeds),
+                "gated_posts": gated_posts,
+                "gated_subreddits": self.gated_subreddits,
+            },
+        )
         return list(seeds.values())
 
     async def _throttle(self) -> None:
@@ -218,6 +270,10 @@ class _BrowserSession:
         self.page = None
         self.proxy = None
         self.visited: set[str] = set()
+        # How the last navigation ended, so the caller can tell an age gate apart from an
+        # empty result — both of which return no HTML, and only one of which is worth
+        # abandoning the rest of a subreddit over.
+        self.last_state = "empty"
 
     async def close(self) -> None:
         # The persistent profile is kept, so a solved challenge survives.
@@ -299,19 +355,27 @@ class _BrowserSession:
         return await self.page_html(url, wait_for_posts=True)
 
     async def page_html(self, url: str, *, wait_for_posts: bool) -> str | None:
+        self.last_state = "empty"
         for _ in range(2):
             if self.page is None and not await self._launch():
+                self.last_state = "unavailable"
                 return None
             try:
                 await self.page.goto(url, wait_until="commit")
             except Exception as exc:
                 await self._rotate(type(exc).__name__)
                 continue
-            state = await self._wait_for_feed(wait_for_posts=wait_for_posts)
+            state = self.last_state = await self._wait_for_feed(wait_for_posts=wait_for_posts)
             if state == "feed":
                 if wait_for_posts:
                     await self._load_more()
                 return await self.page.content()
+            if state == "gated":
+                # Deliberately no rotation and no retry. An age gate is not about this
+                # IP or this browser: every proxy sees the same wall, so trying again is
+                # pure cost. The caller decides how much to skip.
+                logger.info("shreddit_age_gated", extra={"url": url})
+                return None
             if state == "blocked":
                 await self._rotate("challenge")
                 continue
@@ -357,20 +421,25 @@ class _BrowserSession:
         return False
 
     async def _wait_for_feed(self, *, wait_for_posts: bool = True) -> str:
-        """Return "feed", "blocked", or "empty"."""
+        """Return "feed", "gated", "blocked", or "empty"."""
         deadline = time.monotonic() + HYDRATE_WAIT_SECONDS
         while time.monotonic() < deadline:
             if await self._ready(wait_for_posts):
                 return "feed"
-            text = await self._page_text()
-            if any(snippet in text for snippet in BLOCK_SNIPPETS + RATE_LIMIT_SNIPPETS):
+            state = page_state(await self._page_text())
+            # An age gate is returned the moment it is seen rather than after the
+            # hydration deadline: it has already finished rendering, and waiting the full
+            # twenty seconds for a feed that is never coming is the whole cost of one.
+            if state == "gated":
+                return "gated"
+            if state == "blocked":
                 break
             await asyncio.sleep(1)
         if await self._ready(wait_for_posts):
             return "feed"
-        text = await self._page_text()
-        if not any(snippet in text for snippet in BLOCK_SNIPPETS + RATE_LIMIT_SNIPPETS):
-            return "empty"
+        state = page_state(await self._page_text())
+        if state != "blocked":
+            return state
         # A challenge is only solvable by a person in the visible window. Wait only if
         # somebody was told to expect it; otherwise rotate rather than block the monitor.
         if self.source.challenge_wait_seconds > 0 and not self.source.headless:
@@ -384,6 +453,26 @@ class _BrowserSession:
                     return "feed"
                 await asyncio.sleep(1)
         return "blocked"
+
+
+def page_state(text: str) -> str:
+    """What a page that is not showing a feed turns out to be.
+
+    Separated from the browser so the rule can be tested against real interstitial
+    wording rather than only through a live session. Returns "gated", "blocked" or
+    "empty"; the caller decides what each is worth.
+
+    The order matters. An age gate also offers a login, and some of Reddit's block pages
+    mention verification, so whichever is checked first wins — and mistaking a gate for a
+    block would rotate the proxy pointlessly, while mistaking a block for a gate would
+    stop rotating when rotating is exactly what is needed.
+    """
+    lowered = text.casefold()
+    if any(snippet in lowered for snippet in GATE_SNIPPETS):
+        return "gated"
+    if any(snippet in lowered for snippet in BLOCK_SNIPPETS + RATE_LIMIT_SNIPPETS):
+        return "blocked"
+    return "empty"
 
 
 def _submissions(html: str, subreddit: str) -> list[dict]:

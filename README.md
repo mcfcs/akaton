@@ -194,6 +194,21 @@ Captchas are never auto-solved. With `challenge_wait_seconds: 0` a challenged ru
 moves on, so an unattended monitor finds nothing rather than hanging; raise it if you intend to
 sit and solve one in the window.
 
+**NSFW content is skipped, not worked around.** Some subreddits and some individual posts are
+marked over-18, and a logged-out visitor gets an age gate instead of the feed. That is not a
+block: no proxy rotation, retry or wait gets past it, and the only way through is to assert an age
+and sign in, which the monitor has no business doing. So the gate is recognised and skipped — a
+gated *post* is skipped alone, while a gated *subreddit* is abandoned for the whole run rather
+than paying for one navigation per search term to be told the same thing. It is also returned the
+moment it is seen rather than after the twenty-second hydration wait, which is what hitting one
+used to cost. If every configured subreddit turns out to be gated the run reports it by name, so
+the fix is a configuration change rather than a silent empty week.
+
+The detection deliberately keys on the interstitial's own wording — "you must be 18+ to view this
+community", "Yes, I'm over 18" — and never on anything about logging in. The page text includes
+the navigation bar, and every Reddit page ever served has "Log in" in it, so a login-based rule
+would match the entire site and silently skip all of it.
+
 A post that links out is followed to that page, which is authoritative. A self-post carries its
 own body on the candidate instead, since there is nothing to fetch. Everything after that is the
 ordinary pipeline, so a Reddit lead still has to clear the same authority and confidence gates as
