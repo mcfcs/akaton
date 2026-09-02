@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from akaton.domain.enums import NotificationType, RegistrationState
-from akaton.domain.models import EventFacts
+from akaton.domain.models import EligibilityFact, EventFacts, LocationFact
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,33 @@ class DetectedChange:
     before: Any
     after: Any
     notify: bool
+
+
+# The eligibility answers a reader acts on. `text` is the sentences the extractor happened
+# to pick out of the page and `confidence` is how sure it was — neither is a fact about
+# who may enter, and both wobble on every re-read. Comparing the whole model made a
+# re-scrape that merely gathered different sentences, or firmed 0.9 up to 1.0, alert as
+# "Eligibility Changed". This is the same rule `material_facts` applies to `description`.
+ELIGIBILITY_RULES = (
+    "student_only",
+    "university_students_allowed",
+    "professionals_allowed",
+    "philippines_allowed",
+)
+
+
+def _rules(fact: EligibilityFact) -> dict[str, bool | None]:
+    return {name: getattr(fact, name) for name in ELIGIBILITY_RULES}
+
+
+# Where the event is, without the extractor's confidence in having read it.
+PLACE_PARTS = ("country", "region", "city", "venue", "location_type")
+
+
+def _place(fact: LocationFact) -> dict[str, Any]:
+    value = {name: getattr(fact, name) for name in PLACE_PARTS}
+    value["location_type"] = fact.location_type.value
+    return value
 
 
 def detect_changes(before: EventFacts, after: EventFacts) -> list[DetectedChange]:
@@ -68,8 +95,8 @@ def detect_changes(before: EventFacts, after: EventFacts) -> list[DetectedChange
             DetectedChange(
                 NotificationType.LOCATION_CHANGED,
                 "location",
-                before.location.model_dump(),
-                after.location.model_dump(),
+                _place(before.location),
+                _place(after.location),
                 True,
             )
         )
@@ -83,13 +110,13 @@ def detect_changes(before: EventFacts, after: EventFacts) -> list[DetectedChange
                 True,
             )
         )
-    if before.eligibility.model_dump() != after.eligibility.model_dump():
+    if _rules(before.eligibility) != _rules(after.eligibility):
         changes.append(
             DetectedChange(
                 NotificationType.ELIGIBILITY_CHANGED,
                 "eligibility",
-                before.eligibility.model_dump(),
-                after.eligibility.model_dump(),
+                _rules(before.eligibility),
+                _rules(after.eligibility),
                 True,
             )
         )

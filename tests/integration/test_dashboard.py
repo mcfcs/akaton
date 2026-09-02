@@ -47,7 +47,11 @@ async def test_dashboard_status_and_monitor_controls(config):
         discover = await client.post("/api/actions/discover")
         started = await client.post("/api/actions/scheduler/start")
     assert page.status_code == 200
-    assert "Akaton Monitor" in page.text
+    # The page is served whole and mounts its own script; asserting on the shell rather
+    # than on a headline keeps this from breaking every time the wording is edited.
+    assert "<title>Akaton" in page.text
+    assert 'id="detections-grid"' in page.text
+    assert page.text.rstrip().endswith("</html>")
     assert status.json()["counts"] == {
         "candidates": 0,
         "events": 0,

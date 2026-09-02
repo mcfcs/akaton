@@ -137,5 +137,21 @@ def test_empty_state_rows_span_their_whole_table():
 
 
 def test_the_script_has_no_python_invalid_escape_sequences():
-    """The template is a plain Python string, so a JS `\\/` in it warns at import time."""
-    assert "\\/" not in DASHBOARD_HTML
+    """The template is a plain Python string, so a JS regex in it can warn at import time.
+
+    `\\/` was the one that had bitten us, but `\\s`, `\\d` and `\\w` are far likelier in a
+    regex and warned exactly the same way — `split(/\\s+/)` slipped past a check that only
+    looked for `\\/`. Python 3.12 warns on these and a future version makes them an error,
+    so the whole class is checked rather than the one instance we happened to hit.
+    """
+    import re as _re
+    import warnings
+
+    # Whatever Python itself considers invalid, asked directly rather than reimplemented.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", SyntaxWarning)
+        compile(f"_ = '''{DASHBOARD_HTML}'''", "<dashboard>", "exec")
+    offenders = [str(item.message) for item in caught if item.category is SyntaxWarning]
+    assert not offenders, f"invalid escape(s) in the dashboard template: {offenders}"
+    # Belt and braces for the original case, which is silent in some Python builds.
+    assert not _re.search(r"(?<!\\)\\/", DASHBOARD_HTML)

@@ -77,8 +77,14 @@ def _escape(value: str | None) -> str:
     Discord renders markdown inside embed descriptions and field values, so a post
     containing `[Click here](https://evil.example)` would otherwise produce a link the
     reader cannot tell from ours. AllowedMentions stops pings; it does nothing here.
+
+    `escape_markdown` alone is not enough for that case: it escapes the opening `[` and
+    leaves `](https://…)` untouched, and Discord still renders `\\[text](url)` as a link.
+    The closing bracket is escaped too, so the syntax is broken on both sides and the URL
+    is left visible as text — which is the point, since the reader can then see where it
+    actually goes.
     """
-    return discord.utils.escape_markdown(value or "")
+    return discord.utils.escape_markdown(value or "").replace("]", "\\]")
 
 
 def render_links(urls: list[str] | None, sources: dict | None = None) -> str | None:
@@ -124,6 +130,18 @@ def _discord_time(value: datetime | None) -> str | None:
         return None
     stamp = int(value.timestamp())
     return f"<t:{stamp}:D> (<t:{stamp}:R>)"
+
+
+def _tier_label(payload: NotificationPayload) -> str:
+    """What the footer calls this alert.
+
+    An urgent update — a cancellation, a closing deadline — is coloured like a
+    high-priority alert so it reads as one at a glance, but it is still an update, and
+    the footer must say so rather than inherit the colour's name.
+    """
+    if payload.notification_type not in {"NEW_EVENT", "MANUAL_SEND"}:
+        return "Update"
+    return payload.relevance_tier.replace("_", " ").title()
 
 
 def embed_dict(payload: NotificationPayload) -> dict:
@@ -190,7 +208,7 @@ def embed_dict(payload: NotificationPayload) -> dict:
         # The token stays in the text because reconciliation looks for it here.
         "footer": {
             "text": (
-                f"{payload.relevance_tier.replace('_', ' ').title()} · "
+                f"{_tier_label(payload)} · "
                 f"{payload.confidence_label} confidence · {payload.footer_token}"
             )[:2048]
         },
@@ -393,37 +411,177 @@ def build_new_event_payload(
     )
 
 
+# What each kind of update means for the reader, in the words they would use. The alert
+# previously said "An authoritative source reported a meaningful event update" for all
+# twelve, which describes our pipeline rather than the event.
+CHANGE_HEADLINES = {
+    "REGISTRATION_OPENED": "Registration is now open.",
+    "REGISTRATION_CLOSED": "Registration has closed.",
+    "DEADLINE_EXTENDED": "The registration deadline was extended.",
+    "DEADLINE_CHANGED": "The registration deadline moved.",
+    "DATES_CHANGED": "The event dates changed.",
+    "VENUE_CHANGED": "The venue changed.",
+    "LOCATION_CHANGED": "The location changed.",
+    "ELIGIBILITY_CHANGED": "Who can enter has changed.",
+    "PRIZE_CHANGED": "The prize changed.",
+    "EVENT_CANCELLED": "This event was cancelled.",
+    "EVENT_POSTPONED": "This event was postponed.",
+}
+# An update the reader may need to act on quickly is coloured like a high-priority alert
+# rather than like routine good news.
+URGENT_CHANGES = frozenset(
+    {"EVENT_CANCELLED", "REGISTRATION_CLOSED", "DEADLINE_CHANGED", "EVENT_POSTPONED"}
+)
+# Labels that read as the thing that changed, not as the enum that recorded it.
+CHANGE_LABELS = {
+    "REGISTRATION_OPENED": "🟢 Registration",
+    "REGISTRATION_CLOSED": "🔴 Registration",
+    "DEADLINE_EXTENDED": "⏳ Deadline extended",
+    "DEADLINE_CHANGED": "⏳ Deadline",
+    "DATES_CHANGED": "📅 Event dates",
+    "VENUE_CHANGED": "📍 Venue",
+    "LOCATION_CHANGED": "📍 Location",
+    "ELIGIBILITY_CHANGED": "🎓 Eligibility",
+    "PRIZE_CHANGED": "🏆 Prize",
+    "EVENT_CANCELLED": "🚫 Status",
+    "EVENT_POSTPONED": "⏸️ Status",
+}
+
+
+def _change_label(change_type: str) -> str:
+    return CHANGE_LABELS.get(change_type, change_type.replace("_", " ").title())
+
+
 def build_change_payload(
     event_id: int,
     event_version: int,
     facts: EventFacts,
     changes: list[EventChangeRow],
+    *,
+    sources: dict | None = None,
 ) -> NotificationPayload:
+    """The alert for an event that changed after we had already announced it.
+
+    Renders the same way a new-event alert does — organizer, banner, dates, trusted links
+    — because the reader is looking at the same competition and needs the same context to
+    decide. Only the fields differ: what changed, rather than what the event is.
+    """
     change_ids = ",".join(str(change.id) for change in changes)
+    kinds = [change.change_type for change in changes]
+    # Plain text, deliberately. `embed_dict` escapes every field value because these carry
+    # scraped strings, so markdown added here would reach the reader as literal `\*\*`.
+    # The arrow already says which side is current.
     fields = {
-        change.change_type.replace("_", " ").title(): (
+        _change_label(change.change_type): (
             f"{_display_change(change.before_json)} → {_display_change(change.after_json)}"
         )[:1024]
         for change in changes
     }
+    headline = (
+        CHANGE_HEADLINES.get(kinds[0], "This event was updated.")
+        if len(changes) == 1
+        else f"{len(changes)} details of this event changed."
+    )
+    registration = facts.registration_url
     return NotificationPayload(
         dedupe_key=f"change:{event_id}:{change_ids}",
-        notification_type=changes[0].change_type if len(changes) == 1 else "EVENT_UPDATED",
+        notification_type=kinds[0] if len(changes) == 1 else "EVENT_UPDATED",
         event_id=event_id,
         event_version=event_version,
-        title=f"Updated: {facts.title or 'Competition'}",
-        description="An authoritative source reported a meaningful event update.",
+        title=facts.title or "Competition",
+        description=headline,
         fields=fields,
         official_url=facts.canonical_url,
-        registration_url=facts.registration_url,
+        registration_url=registration,
         footer_token=f"akaton:{event_id}:{event_version}:change:{change_ids}",
-        relevance_tier="UPDATE",
+        # Drives the colour: an update the reader must act on is not styled like routine
+        # good news. The footer reads "Update" either way — see `embed_dict`.
+        relevance_tier="HIGH_PRIORITY" if URGENT_CHANGES.intersection(kinds) else "UPDATE",
         confidence_label="High",
+        official_url_clickable=bool(facts.canonical_url)
+        and link_trust(facts.canonical_url, sources) is LinkTrust.CLICKABLE,
+        # The context a new-event alert carries. Judged here, where the sources config is
+        # available, exactly as `build_new_event_payload` does it, so a re-render on the
+        # reconciliation path cannot reach a different verdict about what is safe to show.
+        author_name=facts.organizer or organizer_for_url(facts.canonical_url, sources),
+        author_icon_url=organizer_icon(facts.canonical_url, sources),
+        author_url=facts.canonical_url
+        if link_trust(facts.canonical_url or "", sources) is LinkTrust.CLICKABLE
+        else None,
+        image_url=displayable_image(facts.image_url, sources),
+        event_start=facts.event_start.value,
+        deadline=facts.registration_deadline.value,
     )
 
 
+# How each stored change value is turned into something a reader understands. The values
+# arrive as whatever `detect_changes` recorded and SQLAlchemy round-tripped through JSON,
+# so a date is an ISO string, an enum is its name, and eligibility is a small mapping.
+ELIGIBILITY_LABELS = {
+    "student_only": "students only",
+    "university_students_allowed": "university students",
+    "professionals_allowed": "professionals",
+    "philippines_allowed": "PH eligible",
+}
+PLACE_ORDER = ("venue", "city", "region", "country")
+
+
 def _display_change(value: object) -> str:
-    return "Not specified" if value is None else str(value)
+    """One stored before/after value, rendered as prose rather than as a repr.
+
+    The dict branch is the one that matters: `str()` on an eligibility mapping printed
+    `{'text': '…', 'student_only': None, …}` into the alert, which is what the reader
+    actually saw. Nothing here is markdown-escaped — the caller does that, once, over the
+    finished string, because these values carry scraped text.
+    """
+    if value is None or value == "" or value == {}:
+        return "Not specified"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, dict):
+        return _display_mapping(value)
+    if isinstance(value, list):
+        return ", ".join(_display_change(item) for item in value) or "Not specified"
+    text = str(value)
+    # An enum stored as "REGISTRATION_OPEN" reads as a constant, not as a sentence.
+    if text.isupper() and "_" in text or (text.isupper() and text.isalpha()):
+        return text.replace("_", " ").title()
+    parsed = _parse_datetime(text)
+    if parsed is not None:
+        return _format_date(parsed)
+    return " ".join(text.split())
+
+
+def _display_mapping(value: dict) -> str:
+    """An eligibility or location mapping, as the handful of facts it actually states."""
+    if any(name in value for name in ELIGIBILITY_LABELS):
+        stated = [
+            f"{'' if value.get(name) else 'no '}{label}"
+            for name, label in ELIGIBILITY_LABELS.items()
+            if value.get(name) is not None
+        ]
+        if not stated:
+            return "Not specified"
+        joined = ", ".join(stated)
+        # Only the first character: `.capitalize()` lowercases the rest, which turns
+        # "PH eligible" into "Ph eligible".
+        return joined[0].upper() + joined[1:]
+    if any(name in value for name in PLACE_ORDER):
+        parts = [str(value[name]) for name in PLACE_ORDER if value.get(name)]
+        kind = str(value.get("location_type") or "")
+        if not parts and kind and kind != "UNKNOWN":
+            return kind.title()
+        return " — ".join(parts) or "Not specified"
+    # An unrecognised mapping is still not printed as a repr.
+    stated = [f"{name.replace('_', ' ')}: {item}" for name, item in value.items() if item]
+    return "; ".join(stated) or "Not specified"
+
+
+def _parse_datetime(text: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _team_size(minimum: int | None, maximum: int | None) -> str:

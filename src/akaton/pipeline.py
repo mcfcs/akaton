@@ -476,7 +476,11 @@ class CandidatePipeline:
                         "change_debounce",
                     )
                 payload = build_change_payload(
-                    event.id, event.current_version, extraction.facts, notify_changes
+                    event.id,
+                    event.current_version,
+                    extraction.facts,
+                    notify_changes,
+                    sources=self.config.sources,
                 )
                 change_id = notify_changes[0].id
             if not self.config.app.notifications_enabled or not self.notifier:

@@ -38,8 +38,10 @@ def _score() -> ScoringResult:
 def test_markdown_in_scraped_text_is_neutralised():
     """A post can contain a markdown link that would render as if we had written it.
 
-    Escaping the opening bracket is what disarms it: Discord needs an unescaped `[` to
-    build a link, so `\\[Click here](url)` renders as literal text.
+    Both brackets have to be escaped. `escape_markdown` on its own escapes only the
+    opening one, and Discord still renders `\\[Click here](url)` as a working link — so
+    the closing bracket is escaped too, breaking the syntax on both sides and leaving the
+    URL visible as text where the reader can see where it actually points.
     """
     embed = embed_dict(
         _payload(
@@ -48,10 +50,13 @@ def test_markdown_in_scraped_text_is_neutralised():
             fields={"Organizer": "**Totally Legit** [org](https://evil.example)"},
         )
     )
-    assert embed["title"].startswith("\\[Click here]")
-    assert "\\[claim now]" in embed["description"]
+    assert embed["title"].startswith("\\[Click here\\]")
+    assert "\\[claim now\\]" in embed["description"]
     value = embed["fields"][0]["value"]
-    assert "\\[org]" in value
+    assert "\\[org\\]" in value
+    # No bracket anywhere is left able to close a link.
+    for text in (embed["title"], embed["description"], value):
+        assert text.count("]") == text.count("\\]")
     # Bold and other emphasis is defused too, so scraped text cannot shout.
     assert "**Totally Legit**" not in value
 

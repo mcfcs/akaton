@@ -210,9 +210,9 @@ def test_scraped_text_is_still_escaped():
         eligibility=EligibilityFact(text="Open to [everyone](https://evil.example) really")
     )
     value = _field(_embed(facts), "Eligibility")["value"]
-    # Escaping the opening bracket is what breaks it: Discord needs `[text](url)` intact
-    # to form a link, so `\[text](url)` renders as the literal characters. Note the
-    # unescaped substring is still *present* — it is preceded by the backslash — so the
-    # thing to assert is that every bracket carries one.
-    assert "\\[everyone]" in value
+    # Both brackets have to carry a backslash. Escaping only the opening one leaves
+    # `\[text](url)`, which Discord still renders as a link; breaking the closing bracket
+    # too is what actually disarms it and leaves the URL readable as text.
+    assert "\\[everyone\\]" in value
     assert value.count("[") == value.count("\\[")
+    assert value.count("]") == value.count("\\]")
